@@ -89,6 +89,7 @@ public final class NmsBridge {
         try {
             Class<?> craftItemStack = Class.forName("org.bukkit.craftbukkit.inventory.CraftItemStack");
             Class<?> nmsItemStack = Class.forName("net.minecraft.world.item.ItemStack");
+            Class<?> itemInstance = Class.forName("net.minecraft.world.item.ItemInstance");
             Class<?> serverPlayer = Class.forName("net.minecraft.server.level.ServerPlayer");
             Class<?> craftPlayer = Class.forName("org.bukkit.craftbukkit.entity.CraftPlayer");
 
@@ -97,7 +98,7 @@ public final class NmsBridge {
             Class<?> menuClass = containerMenuField.getType();
             menuGetCarried = menuClass.getMethod("getCarried");
             menuSetCarried = menuClass.getMethod("setCarried", nmsItemStack);
-            craftAsBukkitCopy = craftItemStack.getMethod("asBukkitCopy", nmsItemStack);
+            craftAsBukkitCopy = craftItemStack.getMethod("asBukkitCopy", itemInstance);
             craftAsNMSCopy = craftItemStack.getMethod("asNMSCopy", ItemStack.class);
             cursorAvailable = true;
             logger.info("NMS cursor bridge ready");
@@ -410,14 +411,15 @@ public final class NmsBridge {
     }
 
     private static Field findField(Class<?> type, String name) throws NoSuchFieldException {
-        try {
-            Field field = type.getField(name);
-            field.setAccessible(true);
-            return field;
-        } catch (NoSuchFieldException ignored) {
-            Field field = type.getDeclaredField(name);
-            field.setAccessible(true);
-            return field;
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            try {
+                Field field = current.getDeclaredField(name);
+                field.setAccessible(true);
+                return field;
+            } catch (NoSuchFieldException ignored) {
+                // continue with superclass
+            }
         }
+        throw new NoSuchFieldException(type.getName() + "#" + name);
     }
 }
