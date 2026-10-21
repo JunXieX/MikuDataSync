@@ -58,7 +58,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new HandoffListener(handoffManager), this);
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
                 event.registrar().register(
-                        MdsCommand.node(ipcClient, config),
+                        MdsCommand.node(ipcClient, config, captureService),
                         "MikuDataSync administration",
                         java.util.List.of()
                 ));

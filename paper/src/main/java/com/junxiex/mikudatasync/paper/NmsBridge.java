@@ -79,6 +79,10 @@ public final class NmsBridge {
         return Bukkit.getUnsafe().getDataVersion();
     }
 
+    public static boolean cursorBridgeAvailable() {
+        return cursorAvailable;
+    }
+
     public static boolean dataBridgeAvailable() {
         return dataAvailable;
     }
