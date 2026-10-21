@@ -129,7 +129,7 @@ public final class ApplyService {
         if (maps != null) {
             try {
                 java.util.List<MapDataList.Entry> entries = MapDataList.decode(maps);
-                PluginSchedulers.runOnGlobal(plugin, () -> {
+                PluginSchedulers.runDelayed(plugin, player, () -> PluginSchedulers.runOnGlobal(plugin, () -> {
                     try {
                         java.util.Map<Integer, Integer> mapped = NmsBridge.createMaps(player.getWorld(), entries);
                         PluginSchedulers.runOnEntity(plugin, player, () -> {
@@ -139,7 +139,7 @@ public final class ApplyService {
                     } catch (Exception e) {
                         Bukkit.getLogger().warning("Failed to create map data: " + e.getMessage());
                     }
-                });
+                }), 40L);
             } catch (Exception e) {
                 Bukkit.getLogger().warning("Failed to apply map data: " + e.getMessage());
             }
