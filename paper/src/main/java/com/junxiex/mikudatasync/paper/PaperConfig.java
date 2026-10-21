@@ -92,8 +92,8 @@ public record PaperConfig(
                 Set.copyOf(segments),
                 cfg.getBoolean("sync.pdc-merge", false),
                 cfg.getBoolean("sync.advancement-strict", true),
-                Math.max(5, cfg.getInt("sync.periodic-snapshot-seconds", 30)),
-                Math.max(50, cfg.getInt("sync.prelogin-fetch-timeout-ms", 500)),
+                Math.max(5, Math.min(3600, cfg.getInt("sync.periodic-snapshot-seconds", 30))),
+                Math.max(50, Math.min(60_000, cfg.getInt("sync.prelogin-fetch-timeout-ms", 500))),
                 onSyncUnavailable,
                 cfg.getBoolean("debug.log-timings", false),
                 cfg.getBoolean("debug.enabled", false)

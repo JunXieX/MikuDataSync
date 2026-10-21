@@ -131,7 +131,8 @@ public final class MdsCommand implements SimpleCommand {
             SnapshotMessage message = new SnapshotMessage(entry.seq(), entry.captureSeq(),
                     entry.saveCause(), entry.sourceServer(), entry.envelope());
             var file = backups.write(player.get().getUniqueId(), player.get().getUsername(), message);
-            source.sendMessage(Component.text("Backup written: " + file.getFileName()));
+            source.sendMessage(Component.text("Backup written: " + file.getFileName()
+                    + " (last persisted snapshot)"));
         } catch (Exception e) {
             source.sendMessage(Component.text("Backup failed: " + e.getMessage()));
         }
@@ -167,13 +168,18 @@ public final class MdsCommand implements SimpleCommand {
             source.sendMessage(Component.text("Player not online: " + arguments[1]));
             return;
         }
+        var target = player.get();
+        var nameMatcher = UUID_IN_NAME.matcher(arguments[2]);
+        if (nameMatcher.find() && !nameMatcher.group().equalsIgnoreCase(target.getUniqueId().toString())) {
+            source.sendMessage(Component.text("Backup belongs to another player"));
+            return;
+        }
         try {
             SnapshotMessage message = backups.read(arguments[2]);
             SnapshotEnvelope parsed = SnapshotEnvelope.decode(message.envelope());
             if (parsed.schemaVersion() > Protocol.SCHEMA_VERSION) {
                 throw new IllegalStateException("backup schema is newer than this build");
             }
-            var target = player.get();
             long seq = store.commit(target.getUniqueId(), message);
             target.getCurrentServer().ifPresent(connection ->
                     ipcServer.send(connection.getServerInfo().getName(), Opcode.RESTORE_APPLY,
