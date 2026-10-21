@@ -80,6 +80,10 @@ public final class DebugCommand {
                                         .executes(context -> mapFill(context.getSource().getSender(), config,
                                                 StringArgumentType.getString(context, "value"))))))
                 .then(Commands.literal("workload")
+                        .then(Commands.literal("pdc")
+                                .then(Commands.argument("kb", StringArgumentType.word())
+                                        .executes(context -> workloadPdc(context.getSource().getSender(), config,
+                                                StringArgumentType.getString(context, "kb")))))
                         .then(Commands.literal("fill")
                                 .then(Commands.argument("stacks", StringArgumentType.word())
                                         .then(Commands.argument("kb", StringArgumentType.word())
@@ -190,6 +194,31 @@ public final class DebugCommand {
             return Command.SINGLE_SUCCESS;
         } catch (Exception e) {
             sender.sendMessage(Component.text("failed: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int workloadPdc(CommandSender sender, PaperConfig config, String kbArg) {
+        if (!enabled(sender, config)) {
+            return 0;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("players only"));
+            return 0;
+        }
+        try {
+            int kb = Math.max(1, Math.min(64, Integer.parseInt(kbArg)));
+            java.util.Random random = new java.util.Random(player.getUniqueId().getMostSignificantBits());
+            char[] chars = new char[kb * 1024];
+            for (int i = 0; i < chars.length; i++) {
+                chars[i] = (char) ('a' + random.nextInt(26));
+            }
+            NamespacedKey key = NamespacedKey.fromString("mikudatasync:workload");
+            player.getPersistentDataContainer().set(key, PersistentDataType.STRING, new String(chars));
+            sender.sendMessage(Component.text("workload PDC: " + kb + "KB"));
+            return Command.SINGLE_SUCCESS;
+        } catch (NumberFormatException e) {
+            sender.sendMessage(Component.text("kb must be a number"));
             return 0;
         }
     }
