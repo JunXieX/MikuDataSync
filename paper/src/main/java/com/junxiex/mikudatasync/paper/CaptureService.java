@@ -3,6 +3,7 @@ package com.junxiex.mikudatasync.paper;
 import com.junxiex.mikudatasync.common.AttributeList;
 import com.junxiex.mikudatasync.common.CoreData;
 import com.junxiex.mikudatasync.common.EffectList;
+import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.MiscData;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.Segment;
@@ -48,6 +49,7 @@ public final class CaptureService {
     }
 
     public SnapshotMessage capture(Player player, String cause, ItemStack carriedOverride) {
+        long start = System.nanoTime();
         try {
             Map<Integer, byte[]> segments = new LinkedHashMap<>();
             PlayerInventory inventory = player.getInventory();
@@ -83,8 +85,13 @@ public final class CaptureService {
             long captureSeq = captureSequences
                     .computeIfAbsent(player.getUniqueId(), id -> new AtomicLong())
                     .incrementAndGet();
+            Metrics.recordCapture(System.nanoTime() - start);
+            if (config.logTimings()) {
+                logger.fine("capture " + cause + " took " + (System.nanoTime() - start) / 1_000_000.0 + "ms");
+            }
             return new SnapshotMessage(0L, captureSeq, cause, serverId, envelope.encode());
         } catch (Exception e) {
+            Metrics.recordCapture(System.nanoTime() - start);
             logger.severe("Failed to capture snapshot for " + player.getName() + ": " + e);
             return null;
         }

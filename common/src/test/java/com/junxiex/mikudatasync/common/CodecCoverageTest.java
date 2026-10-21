@@ -6,7 +6,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -102,8 +104,12 @@ class CodecCoverageTest {
         assertEquals(attributes, AttributeList.decode(AttributeList.encode(attributes)));
 
         MiscData misc = new MiscData(true, new byte[] {9, 8, 7});
-        assertEquals(misc, MiscData.decode(misc.encode()));
-        assertEquals(MiscData.EMPTY, MiscData.decode(MiscData.EMPTY.encode()));
+        MiscData decodedMisc = MiscData.decode(misc.encode());
+        assertTrue(decodedMisc.hasCursorItem());
+        assertArrayEquals(misc.cursorItem(), decodedMisc.cursorItem());
+        MiscData emptyMisc = MiscData.decode(MiscData.EMPTY.encode());
+        assertFalse(emptyMisc.hasCursorItem());
+        assertEquals(0, emptyMisc.cursorItem().length);
 
         UUID uuid = UUID.randomUUID();
         NackMessage nack = new NackMessage(uuid, 12L, "apply_failed", "boom");

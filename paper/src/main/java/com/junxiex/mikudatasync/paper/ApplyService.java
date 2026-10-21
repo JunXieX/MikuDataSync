@@ -3,6 +3,7 @@ package com.junxiex.mikudatasync.paper;
 import com.junxiex.mikudatasync.common.AttributeList;
 import com.junxiex.mikudatasync.common.CoreData;
 import com.junxiex.mikudatasync.common.EffectList;
+import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.MiscData;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.ProtocolException;
@@ -43,6 +44,7 @@ public final class ApplyService {
                     + ", local=" + NmsBridge.dataVersion());
         }
 
+        long start = System.nanoTime();
         // Decode everything first: any failure aborts before mutating the player.
         CoreData core = envelope.hasSegment(Segment.CORE) ? CoreData.decode(envelope.segment(Segment.CORE)) : null;
         List<EffectList.Entry> effects = envelope.hasSegment(Segment.EFFECTS)
@@ -139,6 +141,7 @@ public final class ApplyService {
             NmsBridge.applyStatistics(player, statistics);
         }
         player.updateInventory();
+        Metrics.recordApply(System.nanoTime() - start);
     }
 
     private static float clamp(float speed) {

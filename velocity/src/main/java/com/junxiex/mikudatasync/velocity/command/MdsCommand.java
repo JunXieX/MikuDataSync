@@ -1,5 +1,6 @@
 package com.junxiex.mikudatasync.velocity.command;
 
+import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.velocity.IpcServer;
 import com.junxiex.mikudatasync.velocity.SnapshotStore;
@@ -35,7 +36,8 @@ public final class MdsCommand implements SimpleCommand {
             case "status" -> source.sendMessage(Component.text(
                     "MikuDataSync | protocol=" + Protocol.PROTOCOL_VERSION
                             + " | snapshots=" + store.size()
-                            + " | ipc=" + (ipcServer.isRunning() ? "running" : "stopped")));
+                            + " | ipc=" + (ipcServer.isRunning() ? "running" : "stopped")
+                            + " | " + Metrics.gateSummary()));
             case "stats" -> source.sendMessage(Component.text(
                     "snapshots=" + store.size()
                             + " | journal=" + store.journalStatus()

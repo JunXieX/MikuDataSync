@@ -1,6 +1,7 @@
 package com.junxiex.mikudatasync.paper.command;
 
 import com.junxiex.mikudatasync.common.CodecBench;
+import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.paper.CaptureService;
 import com.junxiex.mikudatasync.paper.IpcClient;
@@ -27,7 +28,8 @@ public final class MdsCommand {
                 .requires(source -> source.getSender().hasPermission("mikudatasync.admin"))
                 .then(Commands.literal("status").executes(context -> {
                     context.getSource().getSender().sendMessage(Component.text(
-                            "MikuDataSync | ipc=" + ipcClient.state() + " | server=" + config.serverId()));
+                            "MikuDataSync | ipc=" + ipcClient.state() + " | server=" + config.serverId()
+                                    + " | " + Metrics.captureSummary() + " | " + Metrics.applySummary()));
                     return Command.SINGLE_SUCCESS;
                 }))
                 .then(Commands.literal("bench").executes(context -> {

@@ -1,6 +1,7 @@
 package com.junxiex.mikudatasync.velocity;
 
 import com.junxiex.mikudatasync.common.Frame;
+import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.IpcPayloads;
 import com.junxiex.mikudatasync.common.Opcode;
 import com.velocitypowered.api.event.EventTask;
@@ -48,6 +49,7 @@ public final class SwitchOrchestrator {
             return null;
         }
 
+        long gateStart = System.nanoTime();
         CompletableFuture<Void> gate = new CompletableFuture<>();
         CompletableFuture<Frame> request;
         try {
@@ -70,6 +72,7 @@ public final class SwitchOrchestrator {
                     ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT, IpcPayloads.uuid(uuid));
                 }
                 switching.remove(uuid);
+                Metrics.recordGate(System.nanoTime() - gateStart);
                 gate.complete(null);
             }
         });
