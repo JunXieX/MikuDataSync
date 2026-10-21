@@ -255,7 +255,7 @@ public final class IpcServer implements AutoCloseable {
                     long seq = store.commit(uuid[0], message);
                     connection.send(Opcode.PUT_OK, frame.requestId(), IpcPayloads.putOk(seq));
                     completePending(frame.requestId(), frame);
-                } catch (IOException | ProtocolException e) {
+                } catch (IOException e) {
                     connection.send(Opcode.NACK, frame.requestId(),
                             new NackMessage(uuid[0], 0L, "commit_failed", String.valueOf(e.getMessage())).encode());
                     failPending(frame.requestId(), e);
