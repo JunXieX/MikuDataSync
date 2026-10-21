@@ -1,0 +1,109 @@
+package com.junxiex.mikudatasync.velocity;
+
+import com.junxiex.mikudatasync.common.ConfigException;
+import com.junxiex.mikudatasync.common.MiniYaml;
+import com.junxiex.mikudatasync.common.Protocol;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Locale;
+import java.util.Map;
+
+public record VelocityConfig(
+        String bindHost,
+        int bindPort,
+        String secret,
+        String journalFile,
+        FsyncMode fsyncMode,
+        int fsyncIntervalMs,
+        int switchTimeoutMs,
+        int getWaitMs,
+        String failMode,
+        int periodicFlushSeconds,
+        int maxSnapshotBytes,
+        int readTimeoutMs,
+        boolean retainOffline
+) {
+
+    public enum FsyncMode {
+        ALWAYS,
+        INTERVAL,
+        NEVER
+    }
+
+    public static VelocityConfig load(Path dataDirectory) throws IOException, ConfigException {
+        Files.createDirectories(dataDirectory);
+        Path file = dataDirectory.resolve("config.yml");
+        if (Files.notExists(file)) {
+            try (InputStream in = VelocityConfig.class.getResourceAsStream("/config.yml")) {
+                if (in == null) {
+                    throw new IOException("bundled config.yml is missing");
+                }
+                Files.copy(in, file);
+            }
+        }
+
+        Map<String, Object> root = MiniYaml.parse(Files.readString(file, StandardCharsets.UTF_8));
+
+        String host = MiniYaml.getString(root, "protocol.bind", "127.0.0.1");
+        int port = MiniYaml.getInt(root, "protocol.port", 25666);
+        String secret = MiniYaml.getString(root, "protocol.secret", "");
+        int readTimeoutMs = MiniYaml.getInt(root, "protocol.read-timeout-ms", 15000);
+
+        String journalFile = MiniYaml.getString(root, "store.journal-file", "data/journal.mds");
+        String fsyncModeRaw = MiniYaml.getString(root, "store.fsync-mode", "interval");
+        int fsyncIntervalMs = MiniYaml.getInt(root, "store.fsync-interval-ms", 50);
+        boolean retainOffline = MiniYaml.getBoolean(root, "store.retain-offline-snapshots", false);
+
+        int switchTimeoutMs = MiniYaml.getInt(root, "sync.switch-timeout-ms", 500);
+        int getWaitMs = MiniYaml.getInt(root, "sync.get-wait-ms", 300);
+        String failMode = MiniYaml.getString(root, "sync.fail-mode", "closed");
+        int periodicFlushSeconds = MiniYaml.getInt(root, "sync.periodic-flush-seconds", 30);
+        int maxSnapshotBytes = MiniYaml.getInt(root, "sync.max-snapshot-bytes", Protocol.MAX_SNAPSHOT_BYTES);
+
+        if (secret.length() < 16) {
+            throw new ConfigException("protocol.secret must be at least 16 characters");
+        }
+        if (port < 1 || port > 65535) {
+            throw new ConfigException("protocol.port out of range: " + port);
+        }
+        if (maxSnapshotBytes < 1024 || maxSnapshotBytes > Protocol.MAX_SNAPSHOT_BYTES) {
+            throw new ConfigException("sync.max-snapshot-bytes out of range: " + maxSnapshotBytes);
+        }
+        if (switchTimeoutMs < 50 || switchTimeoutMs > 30000) {
+            throw new ConfigException("sync.switch-timeout-ms out of range: " + switchTimeoutMs);
+        }
+        FsyncMode fsyncMode;
+        try {
+            fsyncMode = FsyncMode.valueOf(fsyncModeRaw.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new ConfigException("store.fsync-mode must be always, interval or never");
+        }
+        if (!failMode.equals("closed") && !failMode.equals("open") && !failMode.equals("kick")) {
+            throw new ConfigException("sync.fail-mode must be closed, open or kick");
+        }
+
+        return new VelocityConfig(
+                host,
+                port,
+                secret,
+                journalFile,
+                fsyncMode,
+                fsyncIntervalMs,
+                switchTimeoutMs,
+                getWaitMs,
+                failMode,
+                periodicFlushSeconds,
+                maxSnapshotBytes,
+                readTimeoutMs,
+                retainOffline
+        );
+    }
+
+    public boolean failClosed() {
+        return "closed".equals(failMode);
+    }
+}

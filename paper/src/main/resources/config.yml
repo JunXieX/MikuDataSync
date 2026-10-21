@@ -1,0 +1,35 @@
+proxy:
+  host: "127.0.0.1"
+  port: 25666
+  server-id: "survival-1"
+  secret: "please-change-this-secret-to-a-random-32-byte-string"
+  connect-timeout-ms: 3000
+
+sync:
+  sections:
+    inventory: true
+    ender-chest: true
+    health: true
+    food: true
+    experience: true
+    effects: true
+    advancements: true
+    statistics: true
+    game-mode: true
+    flight: true
+    attributes: true
+    pdc: true
+    cursor-item: true
+    recipes: false
+    location: false
+  pdc-merge: false
+  advancement-strict: true
+  excluded-worlds: []
+  world-map: {}
+  location-apply-delay-ticks: 1
+  periodic-snapshot-seconds: 30
+  prelogin-fetch-timeout-ms: 100
+  on-sync-unavailable: "kick"
+
+debug:
+  log-timings: false

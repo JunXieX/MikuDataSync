@@ -1,0 +1,24 @@
+protocol:
+  bind: "127.0.0.1"
+  port: 25666
+  secret: "please-change-this-secret-to-a-random-32-byte-string"
+  max-frame-bytes: 4194304
+  read-timeout-ms: 15000
+
+store:
+  journal-file: "data/journal.mds"
+  fsync-mode: "interval"
+  fsync-interval-ms: 50
+  compaction-threshold-mb: 64
+  retain-offline-snapshots: false
+
+sync:
+  switch-timeout-ms: 500
+  get-wait-ms: 300
+  fail-mode: "closed"
+  periodic-flush-seconds: 30
+  max-snapshot-bytes: 1048576
+
+metrics:
+  sample-rate: 0.015625
+  log-slow-apply-ms: 5
