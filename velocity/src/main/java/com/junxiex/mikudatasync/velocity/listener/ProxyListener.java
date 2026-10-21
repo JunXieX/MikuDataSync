@@ -1,30 +1,30 @@
 package com.junxiex.mikudatasync.velocity.listener;
 
-import com.junxiex.mikudatasync.velocity.IpcServer;
+import com.junxiex.mikudatasync.velocity.SnapshotStore;
+import com.junxiex.mikudatasync.velocity.VelocityConfig;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
-import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import org.slf4j.Logger;
 
-/** Switch orchestration is completed in M3; M1 only observes and logs. */
+/** Evicts offline snapshots from memory when they are already durable in the journal. */
 public final class ProxyListener {
 
     private final Logger logger;
-    private final IpcServer ipcServer;
+    private final SnapshotStore store;
+    private final VelocityConfig config;
 
-    public ProxyListener(Logger logger, IpcServer ipcServer) {
+    public ProxyListener(Logger logger, SnapshotStore store, VelocityConfig config) {
         this.logger = logger;
-        this.ipcServer = ipcServer;
-    }
-
-    @Subscribe
-    public void onServerPreConnect(ServerPreConnectEvent event) {
-        logger.debug("switch requested for {} (ipcRunning={})",
-                event.getPlayer().getUsername(), ipcServer.isRunning());
+        this.store = store;
+        this.config = config;
     }
 
     @Subscribe
     public void onDisconnect(DisconnectEvent event) {
-        logger.debug("player disconnected: {}", event.getPlayer().getUsername());
+        if (config.retainOffline()) {
+            return;
+        }
+        store.evict(event.getPlayer().getUniqueId());
+        logger.debug("Evicted offline snapshot for {}", event.getPlayer().getUsername());
     }
 }
