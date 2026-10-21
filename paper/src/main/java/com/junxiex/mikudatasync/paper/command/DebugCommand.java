@@ -48,7 +48,7 @@ public final class DebugCommand {
                 }))
                 .then(Commands.literal("pdc")
                         .then(Commands.literal("set")
-                                .then(Commands.argument("key", StringArgumentType.word())
+                                .then(Commands.argument("key", StringArgumentType.string())
                                         .then(Commands.argument("type", StringArgumentType.word())
                                                 .then(Commands.argument("value", StringArgumentType.greedyString())
                                                         .executes(context -> pdcSet(context.getSource().getSender(), config,
@@ -56,7 +56,7 @@ public final class DebugCommand {
                                                                 StringArgumentType.getString(context, "type"),
                                                                 StringArgumentType.getString(context, "value")))))))
                         .then(Commands.literal("get")
-                                .then(Commands.argument("key", StringArgumentType.word())
+                                .then(Commands.argument("key", StringArgumentType.string())
                                         .executes(context -> pdcGet(context.getSource().getSender(), config,
                                                 StringArgumentType.getString(context, "key")))))
                         .then(Commands.literal("clear").executes(context -> {
@@ -77,7 +77,7 @@ public final class DebugCommand {
                         })))
                 .then(Commands.literal("item")
                         .then(Commands.literal("set")
-                                .then(Commands.argument("key", StringArgumentType.word())
+                                .then(Commands.argument("key", StringArgumentType.string())
                                         .then(Commands.argument("type", StringArgumentType.word())
                                                 .then(Commands.argument("value", StringArgumentType.greedyString())
                                                         .executes(context -> itemSet(context.getSource().getSender(), config,
