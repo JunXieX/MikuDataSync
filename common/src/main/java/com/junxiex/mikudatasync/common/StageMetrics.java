@@ -34,7 +34,7 @@ public final class StageMetrics {
                     builder.append(' ').append(entry.getKey())
                             .append('=').append(String.format(Locale.ROOT, "%.1f/%.1f us x%d",
                                     counter.total.sum() / 1000.0 / count,
-                                    counter.max.sum() / 1000.0, count));
+                                    counter.max.get() / 1000.0, count));
                 });
         return builder.toString();
     }
