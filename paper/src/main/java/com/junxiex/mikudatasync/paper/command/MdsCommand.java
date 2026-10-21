@@ -23,7 +23,7 @@ public final class MdsCommand {
 
     public static LiteralCommandNode<CommandSourceStack> node(MikuDataSyncPaper plugin, IpcClient ipcClient,
                                                               PaperConfig config, CaptureService captureService) {
-        return Commands.literal("mds")
+        return Commands.literal("mdsbackend")
                 .requires(source -> source.getSender().hasPermission("mikudatasync.admin"))
                 .then(Commands.literal("status").executes(context -> {
                     context.getSource().getSender().sendMessage(Component.text(

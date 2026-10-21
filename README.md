@@ -60,8 +60,9 @@
 | `/mds stats` | 查看快照数量、日志大小、fsync 模式 | `mikudatasync.admin` |
 | `/mds doctor` | 自检配置、IPC 与日志状态 | `mikudatasync.admin` |
 | `/mds switch <server>` | 代理端：把执行者切换到指定子服（走同步闸门） | `mikudatasync.admin` |
-| `/mds bench` | 在本服运行一次 codec 微基准（p50/p95） | `mikudatasync.admin` |
-| `/mds selftest` | 检查 NMS 桥状态并可对执行者做一次采集测试 | `mikudatasync.admin` |
+| `/mdsbackend status` | 后端：查看本服 IPC 状态 | `mikudatasync.admin` |
+| `/mdsbackend bench` | 后端：运行一次 codec 微基准（p50/p95） | `mikudatasync.admin` |
+| `/mdsbackend selftest` | 后端：检查 NMS 桥状态并可对执行者做一次采集测试 | `mikudatasync.admin` |
 
 ## 同步范围
 
