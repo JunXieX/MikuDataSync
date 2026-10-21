@@ -98,6 +98,19 @@ public final class IpcClient implements AutoCloseable {
         });
     }
 
+    /** Waits for in-flight snapshot writes (used during shutdown). */
+    public void awaitPending(long timeoutMs) {
+        java.util.List<CompletableFuture<Frame>> futures = new java.util.ArrayList<>(pending.values());
+        if (futures.isEmpty()) {
+            return;
+        }
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                    .get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (Exception ignored) {
+        }
+    }
+
     public void ack(UUID uuid, long appliedSeq) {
         try {
             writeFrame(new Frame(Opcode.ACK, 0L, IpcPayloads.ack(uuid, appliedSeq)));

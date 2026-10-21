@@ -122,20 +122,27 @@ public final class MdsCommand implements SimpleCommand {
             source.sendMessage(Component.text("Player not online: " + arguments[1]));
             return;
         }
-        SnapshotStore.Entry entry = store.get(player.get().getUniqueId());
-        if (entry == null) {
-            source.sendMessage(Component.text("No snapshot for " + arguments[1]));
+        var target = player.get();
+        var current = target.getCurrentServer();
+        if (current.isEmpty()) {
+            source.sendMessage(Component.text("Player is not connected to a backend"));
             return;
         }
-        try {
-            SnapshotMessage message = new SnapshotMessage(entry.seq(), entry.captureSeq(),
-                    entry.saveCause(), entry.sourceServer(), entry.envelope());
-            var file = backups.write(player.get().getUniqueId(), player.get().getUsername(), message);
-            source.sendMessage(Component.text("Backup written: " + file.getFileName()
-                    + " (last persisted snapshot)"));
-        } catch (Exception e) {
-            source.sendMessage(Component.text("Backup failed: " + e.getMessage()));
-        }
+        ipcServer.request(current.get().getServerInfo().getName(), Opcode.BACKUP_REQ,
+                        IpcPayloads.uuid(target.getUniqueId()), 5000L)
+                .whenComplete((frame, error) -> {
+                    if (error != null) {
+                        source.sendMessage(Component.text("Backup failed: " + error.getMessage()));
+                        return;
+                    }
+                    try {
+                        SnapshotMessage message = SnapshotMessage.decode(frame.payload());
+                        var file = backups.write(target.getUniqueId(), target.getUsername(), message);
+                        source.sendMessage(Component.text("Backup written (live capture): " + file.getFileName()));
+                    } catch (Exception e) {
+                        source.sendMessage(Component.text("Backup failed: " + e.getMessage()));
+                    }
+                });
     }
 
     private void listBackups(CommandSource source) {
@@ -181,10 +188,24 @@ public final class MdsCommand implements SimpleCommand {
                 throw new IllegalStateException("backup schema is newer than this build");
             }
             long seq = store.commit(target.getUniqueId(), message);
-            target.getCurrentServer().ifPresent(connection ->
-                    ipcServer.send(connection.getServerInfo().getName(), Opcode.RESTORE_APPLY,
-                            IpcPayloads.putRequest(target.getUniqueId(), message)));
-            source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq + "; applying now"));
+            var current = target.getCurrentServer();
+            if (current.isEmpty()) {
+                source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
+                        + "; player has no backend, applies on next join"));
+                return;
+            }
+            ipcServer.request(current.get().getServerInfo().getName(), Opcode.RESTORE_APPLY,
+                            IpcPayloads.putRequest(target.getUniqueId(), message), 5000L)
+                    .whenComplete((frame, error) -> {
+                        if (error != null) {
+                            source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
+                                    + " in store, but apply failed: " + error.getMessage()
+                                    + " (will retry on next join)"));
+                        } else {
+                            source.sendMessage(Component.text("Restored and applied " + arguments[1]
+                                    + " at seq " + seq));
+                        }
+                    });
         } catch (Exception e) {
             source.sendMessage(Component.text("Restore failed: " + e.getMessage()));
         }

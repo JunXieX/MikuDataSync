@@ -21,7 +21,10 @@ public enum Opcode {
     STATS_REQ(22),
     STATS_RES(23),
     RESTORE_NOTICE(24),
-    RESTORE_APPLY(25);
+    RESTORE_APPLY(25),
+    BACKUP_REQ(26),
+    BACKUP_RES(27),
+    RESTORE_RES(28);
 
     private final int code;
 

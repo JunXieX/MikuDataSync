@@ -41,13 +41,15 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         handoffManager = new HandoffManager(this, ipcClient, captureService);
 
         PlayerListener playerListener = new PlayerListener(this, config, ipcClient, captureService, applyService, pendingSnapshots, handoffManager);
-        RestoreHandler restoreHandler = new RestoreHandler(this, applyService);
+        RestoreHandler restoreHandler = new RestoreHandler(this, ipcClient, applyService);
+        BackupHandler backupHandler = new BackupHandler(this, ipcClient, captureService);
         ipcClient.setFrameHandler(frame -> {
             try {
                 switch (frame.opcode()) {
                     case FLUSH_REQ -> handoffManager.handleFlush(IpcPayloads.parseUuid(frame.payload()), frame.requestId());
                     case HANDOFF_ABORT -> handoffManager.abort(IpcPayloads.parseUuid(frame.payload()));
-                    case RESTORE_APPLY -> restoreHandler.handle(frame.payload());
+                    case RESTORE_APPLY -> restoreHandler.handle(frame.payload(), frame.requestId());
+                    case BACKUP_REQ -> backupHandler.handle(frame.payload(), frame.requestId());
                     default -> {
                     }
                 }
@@ -117,6 +119,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
                 }
             }
         }
+        ipcClient.awaitPending(1000L);
         ipcClient.close();
     }
 
