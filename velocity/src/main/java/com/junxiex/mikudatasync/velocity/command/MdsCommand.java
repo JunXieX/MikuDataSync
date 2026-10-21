@@ -156,29 +156,26 @@ public final class MdsCommand implements SimpleCommand {
             "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
 
     private void restore(CommandSource source, String[] arguments) {
-        if (arguments.length < 2) {
-            source.sendMessage(Component.text("Usage: /mds restore <backup-file>"));
+        if (arguments.length < 3) {
+            source.sendMessage(Component.text("Usage: /mds restore <player> <backup-file>"));
             return;
         }
-        String fileName = arguments[1];
-        var matcher = UUID_IN_NAME.matcher(fileName);
-        if (!matcher.find()) {
-            source.sendMessage(Component.text("Backup filename has no player UUID"));
-            return;
-        }
-        java.util.UUID uuid = java.util.UUID.fromString(matcher.group());
-        if (server.getPlayer(uuid).isPresent()) {
-            source.sendMessage(Component.text("Player must be offline before restoring"));
+        var player = server.getPlayer(arguments[1]);
+        if (player.isEmpty()) {
+            source.sendMessage(Component.text("Player not online: " + arguments[1]));
             return;
         }
         try {
-            SnapshotMessage message = backups.read(fileName);
-            long seq = store.commit(uuid, message);
-            store.markRestored(uuid);
-            source.sendMessage(Component.text("Restored offline player " + uuid + " at seq " + seq
-                    + " (applies on next join)"));
+            SnapshotMessage message = backups.read(arguments[2]);
+            var target = player.get();
+            long seq = store.commit(target.getUniqueId(), message);
+            target.getCurrentServer().ifPresent(connection ->
+                    ipcServer.send(connection.getServerInfo().getName(), Opcode.RESTORE_APPLY,
+                            IpcPayloads.putRequest(target.getUniqueId(), message)));
+            source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq + "; applying now"));
         } catch (Exception e) {
             source.sendMessage(Component.text("Restore failed: " + e.getMessage()));
         }
+    }
     }
 }

@@ -32,10 +32,10 @@ public final class RestoreHandler {
                 try {
                     SnapshotEnvelope envelope = SnapshotEnvelope.decode(message.envelope());
                     applyService.apply(player, envelope);
-                    player.kick(Component.text("数据已恢复，请重新连接"));
+                    player.sendMessage(Component.text("数据已恢复"));
                 } catch (Exception e) {
                     plugin.getLogger().severe("Failed to apply restored snapshot: " + e.getMessage());
-                    player.kick(Component.text("数据恢复失败，请联系管理员"));
+                    player.sendMessage(Component.text("数据恢复失败，请联系管理员"));
                 }
             }, () -> {
             });
