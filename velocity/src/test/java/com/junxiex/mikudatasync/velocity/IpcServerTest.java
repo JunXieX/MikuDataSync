@@ -85,10 +85,10 @@ class IpcServerTest {
         assertEquals(Opcode.HELLO_ACK, ack.opcode());
     }
 
-    private static SnapshotMessage message(byte value) {
+    private static SnapshotMessage message(byte value) throws Exception {
         SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 5023,
                 Map.of(Segment.CORE, new byte[] {value}));
-        return new SnapshotMessage(0L, 1L, "switch", SERVER_ID, envelope);
+        return new SnapshotMessage(0L, 1L, "switch", SERVER_ID, envelope.encode());
     }
 
     @Test

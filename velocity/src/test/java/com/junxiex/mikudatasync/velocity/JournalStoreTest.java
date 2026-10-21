@@ -22,10 +22,10 @@ class JournalStoreTest {
     @TempDir
     Path tempDir;
 
-    private static SnapshotMessage message(long seq, int value) {
+    private static SnapshotMessage message(long seq, int value) throws Exception {
         SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 5023,
                 Map.of(Segment.CORE, new byte[] {(byte) value}));
-        return new SnapshotMessage(seq, seq, "switch", "server-1", envelope);
+        return new SnapshotMessage(seq, seq, "switch", "server-1", envelope.encode());
     }
 
     @Test
