@@ -57,6 +57,8 @@ public final class NmsBridge {
     private static Method serverLevelDimension;
     private static Method mapDataCreateFresh;
     private static Method mapIdId;
+    private static java.lang.reflect.Constructor<?> mapIdNew;
+    private static Method serverLevelGetMapData;
 
     // --- data bridge (statistics + advancements) ---
     private static boolean dataAvailable;
@@ -136,6 +138,8 @@ public final class NmsBridge {
             craftWorldGetHandle = craftWorld.getMethod("getHandle");
             serverLevelGetFreeMapId = serverLevel.getMethod("getFreeMapId");
             serverLevelSetMapData = serverLevel.getMethod("setMapData", mapId, mapData);
+            serverLevelGetMapData = serverLevel.getMethod("getMapData", mapId);
+            mapIdNew = mapId.getConstructor(int.class);
             serverLevelDimension = serverLevel.getMethod("dimension");
             mapDataCreateFresh = mapData.getMethod("createFresh", double.class, double.class, byte.class,
                     boolean.class, boolean.class, resourceKey);
@@ -162,12 +166,11 @@ public final class NmsBridge {
         if (item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
             return null;
         }
-        MapView view = Bukkit.getMap(meta.getMapId());
-        if (view == null) {
-            return null;
-        }
         try {
-            Object handle = mapHandle(view);
+            Object handle = mapData(player.getWorld(), meta.getMapId());
+            if (handle == null) {
+                return null;
+            }
             byte[] colors = (byte[]) mapColorsField.get(handle);
             int checksum = colors == null ? 0 : checksum(colors);
             return new MapInfo(meta.getMapId(), (byte) mapScaleField.get(handle),
@@ -186,12 +189,11 @@ public final class NmsBridge {
         if (item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
             return false;
         }
-        MapView view = Bukkit.getMap(meta.getMapId());
-        if (view == null) {
-            return false;
-        }
         try {
-            Object handle = mapHandle(view);
+            Object handle = mapData(player.getWorld(), meta.getMapId());
+            if (handle == null) {
+                return false;
+            }
             byte[] colors = (byte[]) mapColorsField.get(handle);
             if (colors == null || colors.length != MapDataList.COLORS_LENGTH) {
                 colors = new byte[MapDataList.COLORS_LENGTH];
@@ -210,8 +212,8 @@ public final class NmsBridge {
             return null;
         }
         Map<Integer, MapDataList.Entry> maps = new java.util.LinkedHashMap<>();
-        collectMaps(player.getInventory().getContents(), maps);
-        collectMaps(player.getEnderChest().getContents(), maps);
+        collectMaps(player, player.getInventory().getContents(), maps);
+        collectMaps(player, player.getEnderChest().getContents(), maps);
         if (maps.isEmpty()) {
             return null;
         }
@@ -222,7 +224,7 @@ public final class NmsBridge {
         return MapDataList.encode(entries);
     }
 
-    private static void collectMaps(ItemStack[] items, Map<Integer, MapDataList.Entry> out) {
+    private static void collectMaps(Player player, ItemStack[] items, Map<Integer, MapDataList.Entry> out) {
         if (items == null) {
             return;
         }
@@ -234,12 +236,11 @@ public final class NmsBridge {
             if (out.containsKey(id)) {
                 continue;
             }
-            MapView view = Bukkit.getMap(id);
-            if (view == null) {
-                continue;
-            }
             try {
-                Object handle = mapHandle(view);
+                Object handle = mapData(player.getWorld(), id);
+                if (handle == null) {
+                    continue;
+                }
                 byte[] colors = (byte[]) mapColorsField.get(handle);
                 if (colors == null || colors.length != MapDataList.COLORS_LENGTH) {
                     continue;
@@ -292,6 +293,9 @@ public final class NmsBridge {
             mapColorsField.set(data, entry.colors().clone());
             mapLockedField.set(data, entry.locked());
             serverLevelSetMapData.invoke(level, mapId, data);
+            logger.info("MDS map create: source=" + entry.mapId() + " target=" + newId
+                    + " checksum=" + checksum((byte[]) mapColorsField.get(data))
+                    + " registered=" + checksum((byte[]) mapColorsField.get(mapData(world, newId))));
             mapped.put(entry.mapId(), newId);
         }
         return mapped;
@@ -340,6 +344,12 @@ public final class NmsBridge {
 
     private static Object mapHandle(MapView view) throws Exception {
         return craftMapViewWorldMap.get(view);
+    }
+
+    private static Object mapData(org.bukkit.World world, int id) throws Exception {
+        Object level = craftWorldGetHandle.invoke(world);
+        Object mapId = mapIdNew.newInstance(id);
+        return serverLevelGetMapData.invoke(level, mapId);
     }
 
     private static int checksum(byte[] colors) {
