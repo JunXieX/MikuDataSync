@@ -73,6 +73,7 @@ public final class DebugCommand {
                         })))
                 .then(Commands.literal("map")
                         .then(Commands.literal("info").executes(context -> mapInfo(context.getSource().getSender(), config)))
+                        .then(Commands.literal("init").executes(context -> mapInit(context.getSource().getSender(), config)))
                         .then(Commands.literal("fill")
                                 .then(Commands.argument("value", StringArgumentType.word())
                                         .executes(context -> mapFill(context.getSource().getSender(), config,
@@ -183,6 +184,27 @@ public final class DebugCommand {
             sender.sendMessage(Component.text("failed: " + e.getMessage()));
             return 0;
         }
+    }
+
+    private static int mapInit(CommandSender sender, PaperConfig config) {
+        if (!enabled(sender, config)) {
+            return 0;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("players only"));
+            return 0;
+        }
+        var item = player.getInventory().getItemInMainHand();
+        if (item.getType().isAir() || !(item.getItemMeta() instanceof org.bukkit.inventory.meta.MapMeta meta)) {
+            sender.sendMessage(Component.text("hold a map item in the main hand"));
+            return 0;
+        }
+        var view = org.bukkit.Bukkit.createMap(player.getWorld());
+        meta.setMapId(view.getId());
+        item.setItemMeta(meta);
+        player.getInventory().setItemInMainHand(item);
+        sender.sendMessage(Component.text("map initialised id=" + view.getId()));
+        return Command.SINGLE_SUCCESS;
     }
 
     private static int mapInfo(CommandSender sender, PaperConfig config) {
