@@ -48,13 +48,9 @@ public final class DebugCommand {
                 }))
                 .then(Commands.literal("pdc")
                         .then(Commands.literal("set")
-                                .then(Commands.argument("key", StringArgumentType.string())
-                                        .then(Commands.argument("type", StringArgumentType.word())
-                                                .then(Commands.argument("value", StringArgumentType.greedyString())
-                                                        .executes(context -> pdcSet(context.getSource().getSender(), config,
-                                                                StringArgumentType.getString(context, "key"),
-                                                                StringArgumentType.getString(context, "type"),
-                                                                StringArgumentType.getString(context, "value")))))))
+                                .then(Commands.argument("payload", StringArgumentType.greedyString())
+                                        .executes(context -> pdcSet(context.getSource().getSender(), config,
+                                                StringArgumentType.getString(context, "payload")))))
                         .then(Commands.literal("get")
                                 .then(Commands.argument("key", StringArgumentType.string())
                                         .executes(context -> pdcGet(context.getSource().getSender(), config,
@@ -77,13 +73,9 @@ public final class DebugCommand {
                         })))
                 .then(Commands.literal("item")
                         .then(Commands.literal("set")
-                                .then(Commands.argument("key", StringArgumentType.string())
-                                        .then(Commands.argument("type", StringArgumentType.word())
-                                                .then(Commands.argument("value", StringArgumentType.greedyString())
-                                                        .executes(context -> itemSet(context.getSource().getSender(), config,
-                                                                StringArgumentType.getString(context, "key"),
-                                                                StringArgumentType.getString(context, "type"),
-                                                                StringArgumentType.getString(context, "value")))))))
+                                .then(Commands.argument("payload", StringArgumentType.greedyString())
+                                        .executes(context -> itemSet(context.getSource().getSender(), config,
+                                                StringArgumentType.getString(context, "payload")))))
                         .then(Commands.literal("get").executes(context -> itemGet(context.getSource().getSender(), config)))
                         .then(Commands.literal("name")
                                 .then(Commands.argument("value", StringArgumentType.greedyString())
@@ -101,10 +93,18 @@ public final class DebugCommand {
         return true;
     }
 
-    private static int pdcSet(CommandSender sender, PaperConfig config, String rawKey, String type, String value) {
+    private static int pdcSet(CommandSender sender, PaperConfig config, String payload) {
         if (!enabled(sender, config)) {
             return 0;
         }
+        String[] parts = payload.trim().split("\\s+", 3);
+        if (parts.length < 3) {
+            sender.sendMessage(Component.text("usage: pdc set <key> <type> <value>"));
+            return 0;
+        }
+        String rawKey = parts[0];
+        String type = parts[1];
+        String value = parts[2];
         if (!(sender instanceof Player player)) {
             sender.sendMessage(Component.text("players only"));
             return 0;
@@ -142,10 +142,18 @@ public final class DebugCommand {
         return Command.SINGLE_SUCCESS;
     }
 
-    private static int itemSet(CommandSender sender, PaperConfig config, String rawKey, String type, String value) {
+    private static int itemSet(CommandSender sender, PaperConfig config, String payload) {
         if (!enabled(sender, config)) {
             return 0;
         }
+        String[] parts = payload.trim().split("\\s+", 3);
+        if (parts.length < 3) {
+            sender.sendMessage(Component.text("usage: item set <key> <type> <value>"));
+            return 0;
+        }
+        String rawKey = parts[0];
+        String type = parts[1];
+        String value = parts[2];
         ItemStack item = heldItem(sender);
         if (item == null) {
             return 0;
