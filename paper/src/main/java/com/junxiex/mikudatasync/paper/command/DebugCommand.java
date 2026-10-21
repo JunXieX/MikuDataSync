@@ -52,9 +52,9 @@ public final class DebugCommand {
                                         .executes(context -> pdcSet(context.getSource().getSender(), config,
                                                 StringArgumentType.getString(context, "payload")))))
                         .then(Commands.literal("get")
-                                .then(Commands.argument("key", StringArgumentType.string())
+                                .then(Commands.argument("key", StringArgumentType.greedyString())
                                         .executes(context -> pdcGet(context.getSource().getSender(), config,
-                                                StringArgumentType.getString(context, "key")))))
+                                                StringArgumentType.getString(context, "key").trim()))))
                         .then(Commands.literal("clear").executes(context -> {
                             CommandSender sender = context.getSource().getSender();
                             if (!enabled(sender, config)) {
