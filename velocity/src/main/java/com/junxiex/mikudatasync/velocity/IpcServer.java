@@ -253,6 +253,14 @@ public final class IpcServer implements AutoCloseable {
                     long seq = store.commit(uuid[0], message);
                     connection.send(Opcode.PUT_OK, frame.requestId(), IpcPayloads.putOk(seq));
                     completePending(frame.requestId(), frame);
+                    if (!config.retainOffline()
+                            && ("quit".equalsIgnoreCase(message.saveCause())
+                            || "shutdown".equalsIgnoreCase(message.saveCause()))) {
+                        // The backend's quit PUT can arrive after DisconnectEvent evicted the entry;
+                        // drop it again once it is durable so offline snapshots do not pin memory.
+                        CompletableFuture.delayedExecutor(5, TimeUnit.SECONDS)
+                                .execute(() -> store.evict(uuid[0]));
+                    }
                 } catch (IOException e) {
                     connection.send(Opcode.NACK, frame.requestId(),
                             new NackMessage(uuid[0], 0L, "commit_failed", String.valueOf(e.getMessage())).encode());

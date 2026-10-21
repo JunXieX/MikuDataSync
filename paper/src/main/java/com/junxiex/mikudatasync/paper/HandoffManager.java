@@ -64,6 +64,7 @@ public final class HandoffManager {
         // player frozen on the source server forever.
         PluginSchedulers.runDelayed(plugin, player, () -> handoff.remove(uuid), 200L);
         if (message == null) {
+            NmsBridge.setCarriedItem(player, carried);
             ipcClient.respond(requestId, Opcode.ERROR, error("capture failed"));
             return;
         }

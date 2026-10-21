@@ -49,7 +49,7 @@ class CodecCoverageTest {
     }
 
     @Test
-    void envelopeRejectsBadMagicAndShort() {
+    void envelopeRejectsBadMagicAndShort() throws Exception {
         assertThrows(ProtocolException.class, () -> SnapshotEnvelope.decode(new byte[3]));
         byte[] bytes = new SnapshotEnvelope(1, 1, Map.of(Segment.CORE, new byte[] {1})).encode();
         bytes[0] = 0;
