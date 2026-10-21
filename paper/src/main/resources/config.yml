@@ -28,7 +28,7 @@ sync:
   world-map: {}
   location-apply-delay-ticks: 1
   periodic-snapshot-seconds: 30
-  prelogin-fetch-timeout-ms: 100
+  prelogin-fetch-timeout-ms: 500
   on-sync-unavailable: "kick"
 
 debug:

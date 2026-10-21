@@ -9,6 +9,7 @@ import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.Segment;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import org.bukkit.GameMode;
+import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Registry;
 import org.bukkit.attribute.Attribute;
@@ -100,6 +101,9 @@ public final class ApplyService {
 
             AttributeInstance maxHealthAttribute = player.getAttribute(Attribute.MAX_HEALTH);
             double maxHealth = maxHealthAttribute == null ? 20.0 : maxHealthAttribute.getValue();
+            if (!Double.isFinite(maxHealth) || maxHealth < 1.0) {
+                maxHealth = 1.0;
+            }
             player.setHealth(Math.max(1.0, Math.min(core.health(), maxHealth)));
             player.setAbsorptionAmount(core.absorption());
         }
@@ -114,7 +118,16 @@ public final class ApplyService {
             player.getInventory().setHeldItemSlot(slot);
         }
         if (pdc != null) {
-            player.getPersistentDataContainer().readFromBytes(pdc, true);
+            if (config.pdcMerge()) {
+                ItemStack carrier = new ItemStack(Material.STONE);
+                var meta = carrier.getItemMeta();
+                if (meta != null) {
+                    meta.getPersistentDataContainer().readFromBytes(pdc, true);
+                    meta.getPersistentDataContainer().copyTo(player.getPersistentDataContainer(), false);
+                }
+            } else {
+                player.getPersistentDataContainer().readFromBytes(pdc, true);
+            }
         }
         if (misc != null && misc.hasCursorItem()) {
             NmsBridge.setCarriedItem(player, ItemStack.deserializeBytes(misc.cursorItem()));

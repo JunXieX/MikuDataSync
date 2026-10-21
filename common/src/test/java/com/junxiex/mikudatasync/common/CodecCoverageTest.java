@@ -14,25 +14,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CodecCoverageTest {
 
-    private static SnapshotMessage message(long seq, SnapshotEnvelope envelope) {
-        return new SnapshotMessage(seq, seq + 10, "switch", "server-1", envelope);
+    private static SnapshotMessage message(long seq, SnapshotEnvelope envelope) throws Exception {
+        return new SnapshotMessage(seq, seq + 10, "switch", "server-1", envelope.encode());
     }
 
     @Test
     void envelopeRoundTripWithAllSegmentIds() throws Exception {
-        SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 4321, Map.of(
-                Segment.CORE, new byte[] {1, 2, 3},
-                Segment.INVENTORY, new byte[] {4, 5},
-                Segment.ENDER_CHEST, new byte[] {6},
-                Segment.EFFECTS, new byte[] {7},
-                Segment.ATTRIBUTES, new byte[] {8},
-                Segment.ADVANCEMENTS, new byte[] {9},
-                Segment.STATISTICS, new byte[] {10},
-                Segment.PDC, new byte[] {11},
-                Segment.RECIPES, new byte[] {12},
-                Segment.LOCATION, new byte[] {13},
-                Segment.MISC, new byte[] {14}
-        ));
+        Map<Integer, byte[]> segments = new java.util.HashMap<>();
+        segments.put(Segment.CORE, new byte[] {1, 2, 3});
+        segments.put(Segment.INVENTORY, new byte[] {4, 5});
+        segments.put(Segment.ENDER_CHEST, new byte[] {6});
+        segments.put(Segment.EFFECTS, new byte[] {7});
+        segments.put(Segment.ATTRIBUTES, new byte[] {8});
+        segments.put(Segment.ADVANCEMENTS, new byte[] {9});
+        segments.put(Segment.STATISTICS, new byte[] {10});
+        segments.put(Segment.PDC, new byte[] {11});
+        segments.put(Segment.RECIPES, new byte[] {12});
+        segments.put(Segment.LOCATION, new byte[] {13});
+        segments.put(Segment.MISC, new byte[] {14});
+        SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 4321, segments);
         SnapshotEnvelope decoded = SnapshotEnvelope.decode(envelope.encode());
         assertEquals(4321, decoded.dataVersion());
         assertEquals(11, decoded.segments().size());

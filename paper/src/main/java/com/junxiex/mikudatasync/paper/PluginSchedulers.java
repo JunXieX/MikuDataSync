@@ -30,6 +30,14 @@ public final class PluginSchedulers {
         }
     }
 
+    public static void runDelayed(Plugin plugin, Player player, Runnable action, long delayTicks) {
+        if (FOLIA) {
+            player.getScheduler().runDelayed(plugin, task -> action.run(), null, Math.max(1L, delayTicks));
+        } else {
+            Bukkit.getScheduler().runTaskLater(plugin, action, Math.max(1L, delayTicks));
+        }
+    }
+
     public static void runAsync(Plugin plugin, Runnable action) {
         if (FOLIA) {
             Bukkit.getAsyncScheduler().runNow(plugin, task -> action.run());

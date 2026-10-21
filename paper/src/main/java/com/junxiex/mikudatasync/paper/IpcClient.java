@@ -176,7 +176,16 @@ public final class IpcClient implements AutoCloseable {
     private void onFrame(Frame frame) {
         CompletableFuture<Frame> future = pending.remove(frame.requestId());
         if (future != null) {
-            future.complete(frame);
+            if (frame.opcode() == Opcode.NACK) {
+                try {
+                    NackMessage nack = NackMessage.decode(frame.payload());
+                    future.completeExceptionally(new IOException("backend NACK: " + nack.code() + " " + nack.message()));
+                } catch (ProtocolException e) {
+                    future.completeExceptionally(e);
+                }
+            } else {
+                future.complete(frame);
+            }
             return;
         }
         if (frame.opcode() == Opcode.ERROR) {

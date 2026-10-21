@@ -60,7 +60,7 @@ public final class PlayerListener implements Listener {
         try {
             SnapshotMessage message = ipcClient
                     .getSnapshot(uuid, config.preloginFetchTimeoutMs())
-                    .get(config.preloginFetchTimeoutMs() + 200L, TimeUnit.MILLISECONDS);
+                    .get(config.preloginFetchTimeoutMs() + 500L, TimeUnit.MILLISECONDS);
             if (message == null) {
                 return;
             }
@@ -70,7 +70,7 @@ public final class PlayerListener implements Listener {
                         + ", local=" + NmsBridge.dataVersion());
                 return;
             }
-            pendingSnapshots.put(uuid, new PendingSnapshots.Pending(envelope, message.seq()));
+            pendingSnapshots.put(uuid, new PendingSnapshots.Pending(envelope, message.seq(), System.currentTimeMillis()));
         } catch (Exception e) {
             unavailable(event, "failed to fetch snapshot: " + e.getMessage());
         }
@@ -104,7 +104,13 @@ public final class PlayerListener implements Listener {
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
         pendingSnapshots.remove(uuid);
-        handoffManager.clear(uuid);
+        captureService.forget(uuid);
+        if (handoffManager.isHandingOff(uuid)) {
+            // The switch flush already persisted the final state; a quit snapshot here could
+            // overwrite the new server's snapshot with stale source-side data.
+            handoffManager.clear(uuid);
+            return;
+        }
         SnapshotMessage message = captureService.capture(player, "quit");
         if (message == null) {
             return;

@@ -10,6 +10,7 @@ import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
+import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 
@@ -60,6 +61,13 @@ public final class HandoffListener implements Listener {
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
         if (event.getPlayer() != null && handoff.isHandingOff(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onCommand(PlayerCommandPreprocessEvent event) {
+        if (handoff.isHandingOff(event.getPlayer().getUniqueId())) {
             event.setCancelled(true);
         }
     }

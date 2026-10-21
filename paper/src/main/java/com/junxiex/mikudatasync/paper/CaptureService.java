@@ -44,6 +44,10 @@ public final class CaptureService {
     }
 
     public SnapshotMessage capture(Player player, String cause) {
+        return capture(player, cause, null);
+    }
+
+    public SnapshotMessage capture(Player player, String cause, ItemStack carriedOverride) {
         try {
             Map<Integer, byte[]> segments = new LinkedHashMap<>();
             PlayerInventory inventory = player.getInventory();
@@ -72,7 +76,7 @@ public final class CaptureService {
                 segments.put(Segment.STATISTICS, NmsBridge.captureStatistics(player));
             }
             if (config.enabled(Segment.MISC)) {
-                segments.put(Segment.MISC, miscData(player).encode());
+                segments.put(Segment.MISC, miscData(player, carriedOverride).encode());
             }
 
             SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, NmsBridge.dataVersion(), segments);
@@ -141,11 +145,15 @@ public final class CaptureService {
         return AttributeList.encode(entries);
     }
 
-    private MiscData miscData(Player player) {
-        ItemStack carried = NmsBridge.getCarriedItem(player);
+    private MiscData miscData(Player player, ItemStack override) {
+        ItemStack carried = override != null ? override : NmsBridge.getCarriedItem(player);
         if (carried == null || carried.getType().isAir()) {
             return MiscData.EMPTY;
         }
         return new MiscData(true, carried.serializeAsBytes());
+    }
+
+    public void forget(UUID uuid) {
+        captureSequences.remove(uuid);
     }
 }

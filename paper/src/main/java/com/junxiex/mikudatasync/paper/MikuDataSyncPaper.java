@@ -105,7 +105,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
                 try {
                     SnapshotMessage message = captureService.capture(player, "shutdown");
                     if (message != null) {
-                        ipcClient.putSnapshot(player.getUniqueId(), message, 2000L).get(2, TimeUnit.SECONDS);
+                        ipcClient.putSnapshot(player.getUniqueId(), message, 500L).get(1, TimeUnit.SECONDS);
                     }
                 } catch (Exception e) {
                     getLogger().warning("Failed to flush shutdown snapshot: " + e.getMessage());

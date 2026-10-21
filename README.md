@@ -48,7 +48,7 @@
 | `proxy.server-id` | survival-1 | 必须唯一，且与代理中的子服名一致 |
 | `proxy.secret` | 需修改 | 与代理一致 |
 | `sync.sections.*` | 见默认配置 | 逐项开关；关闭表示“不采集也不应用”，不会写入默认值 |
-| `sync.prelogin-fetch-timeout-ms` | 100 | 登录前取数超时 |
+| `sync.prelogin-fetch-timeout-ms` | 500 | 登录前取数超时 |
 | `sync.on-sync-unavailable` | kick | 数据不可用时踢出（推荐）或放行（continue，可能读到旧数据） |
 | `sync.periodic-snapshot-seconds` | 30 | 周期快照间隔 |
 

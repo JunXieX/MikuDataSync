@@ -99,7 +99,7 @@ public record PaperConfig(
                 List.copyOf(cfg.getStringList("sync.excluded-worlds")),
                 Math.max(0, cfg.getInt("sync.location-apply-delay-ticks", 1)),
                 Math.max(5, cfg.getInt("sync.periodic-snapshot-seconds", 30)),
-                Math.max(20, cfg.getInt("sync.prelogin-fetch-timeout-ms", 100)),
+                Math.max(50, cfg.getInt("sync.prelogin-fetch-timeout-ms", 500)),
                 onSyncUnavailable,
                 cfg.getBoolean("debug.log-timings", false)
         );

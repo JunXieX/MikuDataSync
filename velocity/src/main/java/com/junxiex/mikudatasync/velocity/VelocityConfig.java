@@ -73,6 +73,9 @@ public record VelocityConfig(
         if (maxSnapshotBytes < 1024 || maxSnapshotBytes > Protocol.MAX_SNAPSHOT_BYTES) {
             throw new ConfigException("sync.max-snapshot-bytes out of range: " + maxSnapshotBytes);
         }
+        if (getWaitMs < 10 || getWaitMs > 60000) {
+            throw new ConfigException("sync.get-wait-ms out of range: " + getWaitMs);
+        }
         if (switchTimeoutMs < 50 || switchTimeoutMs > 30000) {
             throw new ConfigException("sync.switch-timeout-ms out of range: " + switchTimeoutMs);
         }

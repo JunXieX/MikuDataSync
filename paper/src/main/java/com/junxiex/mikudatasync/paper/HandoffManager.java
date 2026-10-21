@@ -5,6 +5,7 @@ import com.junxiex.mikudatasync.common.IpcPayloads;
 import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.Set;
 import java.util.UUID;
@@ -50,11 +51,18 @@ public final class HandoffManager {
     private void captureAndRespond(Player player, long requestId) {
         UUID uuid = player.getUniqueId();
         handoff.add(uuid);
+        // Take the cursor item out of the menu first so closing the inventory cannot drop or
+        // move it; it is transferred as part of the snapshot instead.
+        ItemStack carried = NmsBridge.getCarriedItem(player);
+        NmsBridge.setCarriedItem(player, null);
         try {
             player.closeInventory();
         } catch (Exception ignored) {
         }
-        SnapshotMessage message = captureService.capture(player, "switch");
+        SnapshotMessage message = captureService.capture(player, "switch", carried);
+        // A successful gate does not guarantee the target connection succeeds; never leave the
+        // player frozen on the source server forever.
+        PluginSchedulers.runDelayed(plugin, player, () -> handoff.remove(uuid), 200L);
         if (message == null) {
             ipcClient.respond(requestId, Opcode.ERROR, error("capture failed"));
             return;

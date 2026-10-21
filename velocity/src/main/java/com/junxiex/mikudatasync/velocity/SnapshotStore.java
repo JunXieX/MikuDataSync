@@ -64,6 +64,9 @@ public final class SnapshotStore {
         String hash = sha256Hex(message.envelope());
         Entry previous = entries.get(uuid);
         if (previous != null && previous.hash().equals(hash)) {
+            if (journal != null && !"periodic".equalsIgnoreCase(message.saveCause())) {
+                journal.forceIfDirty();
+            }
             return previous.seq();
         }
         long seq = previous == null ? 1L : previous.seq() + 1L;
