@@ -71,7 +71,9 @@ public final class SnapshotStore {
         SnapshotMessage committed = new SnapshotMessage(seq, message.captureSeq(), message.saveCause(),
                 message.sourceServer(), message.envelope());
         if (journal != null) {
-            journal.append(uuid, committed, true);
+            boolean force = !"periodic".equalsIgnoreCase(message.saveCause())
+                    && !"selftest".equalsIgnoreCase(message.saveCause());
+            journal.append(uuid, committed, force);
         }
         entries.put(uuid, new Entry(seq, message.captureSeq(), appliedSeq, message.saveCause(),
                 message.sourceServer(), message.envelope(), hash, System.currentTimeMillis()));
