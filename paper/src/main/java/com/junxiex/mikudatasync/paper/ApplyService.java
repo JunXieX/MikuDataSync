@@ -10,6 +10,7 @@ import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.Segment;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
+import com.junxiex.mikudatasync.common.StageMetrics;
 import com.junxiex.mikudatasync.paper.api.MikuDataSyncApplyEvent;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -50,6 +51,7 @@ public final class ApplyService {
         }
 
         long start = System.nanoTime();
+        long stageStart = System.nanoTime();
         // Decode everything first: any failure aborts before mutating the player.
         CoreData core = envelope.hasSegment(Segment.CORE) ? CoreData.decode(envelope.segment(Segment.CORE)) : null;
         List<EffectList.Entry> effects = envelope.hasSegment(Segment.EFFECTS)
@@ -64,6 +66,7 @@ public final class ApplyService {
         byte[] pdc = envelope.segment(Segment.PDC);
         byte[] advancements = envelope.segment(Segment.ADVANCEMENTS);
         byte[] statistics = envelope.segment(Segment.STATISTICS);
+        StageMetrics.record("apply.decode", System.nanoTime() - stageStart);
 
         Bukkit.getPluginManager().callEvent(new MikuDataSyncApplyEvent(player, envelope));
         if (core != null) {
@@ -115,6 +118,7 @@ public final class ApplyService {
             player.setHealth(Math.max(1.0, Math.min(core.health(), maxHealth)));
             player.setAbsorptionAmount(core.absorption());
         }
+        stageStart = System.nanoTime();
         if (inventory != null) {
             player.getInventory().setContents(inventory);
         }
@@ -125,6 +129,7 @@ public final class ApplyService {
             int slot = Math.max(0, Math.min(8, core.heldSlot()));
             player.getInventory().setHeldItemSlot(slot);
         }
+        StageMetrics.record("apply.inventory", System.nanoTime() - stageStart);
         byte[] maps = envelope.segment(Segment.MAPS);
         if (maps != null) {
             try {
@@ -144,6 +149,7 @@ public final class ApplyService {
                 Bukkit.getLogger().warning("Failed to apply map data: " + e.getMessage());
             }
         }
+        stageStart = System.nanoTime();
         if (pdc != null) {
             if (config.pdcMerge()) {
                 ItemStack carrier = new ItemStack(Material.STONE);
@@ -156,13 +162,20 @@ public final class ApplyService {
                 player.getPersistentDataContainer().readFromBytes(pdc, true);
             }
         }
+        StageMetrics.record("apply.pdc", System.nanoTime() - stageStart);
+        stageStart = System.nanoTime();
         if (advancements != null) {
             NmsBridge.applyAdvancements(player, advancements, config.advancementStrict());
         }
+        StageMetrics.record("apply.advancements", System.nanoTime() - stageStart);
+        stageStart = System.nanoTime();
         if (statistics != null) {
             NmsBridge.applyStatistics(player, statistics);
         }
+        StageMetrics.record("apply.statistics", System.nanoTime() - stageStart);
+        stageStart = System.nanoTime();
         player.updateInventory();
+        StageMetrics.record("apply.flush", System.nanoTime() - stageStart);
         Metrics.recordApply(System.nanoTime() - start);
     }
 

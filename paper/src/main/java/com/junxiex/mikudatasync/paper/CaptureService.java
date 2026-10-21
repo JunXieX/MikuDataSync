@@ -9,6 +9,7 @@ import com.junxiex.mikudatasync.common.MiscData;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.Segment;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
+import com.junxiex.mikudatasync.common.StageMetrics;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.paper.api.MikuDataSyncCaptureEvent;
 import org.bukkit.Registry;
@@ -56,28 +57,28 @@ public final class CaptureService {
             Map<Integer, byte[]> segments = new LinkedHashMap<>();
             PlayerInventory inventory = player.getInventory();
             if (config.enabled(Segment.INVENTORY)) {
-                segments.put(Segment.INVENTORY, ItemStack.serializeItemsAsBytes(inventory.getContents()));
+                segments.put(Segment.INVENTORY, timed("capture.inventory", () -> ItemStack.serializeItemsAsBytes(inventory.getContents())));
             }
             if (config.enabled(Segment.ENDER_CHEST)) {
-                segments.put(Segment.ENDER_CHEST, ItemStack.serializeItemsAsBytes(player.getEnderChest().getContents()));
+                segments.put(Segment.ENDER_CHEST, timed("capture.ender", () -> ItemStack.serializeItemsAsBytes(player.getEnderChest().getContents())));
             }
             if (config.enabled(Segment.CORE)) {
-                segments.put(Segment.CORE, coreData(player).encode());
+                segments.put(Segment.CORE, timed("capture.core", () -> coreData(player).encode()));
             }
             if (config.enabled(Segment.EFFECTS)) {
-                segments.put(Segment.EFFECTS, effects(player));
+                segments.put(Segment.EFFECTS, timed("capture.effects", () -> effects(player)));
             }
             if (config.enabled(Segment.ATTRIBUTES)) {
-                segments.put(Segment.ATTRIBUTES, attributes(player));
+                segments.put(Segment.ATTRIBUTES, timed("capture.attributes", () -> attributes(player)));
             }
             if (config.enabled(Segment.PDC)) {
-                segments.put(Segment.PDC, player.getPersistentDataContainer().serializeToBytes());
+                segments.put(Segment.PDC, timed("capture.pdc", () -> player.getPersistentDataContainer().serializeToBytes()));
             }
             if (config.enabled(Segment.ADVANCEMENTS) && NmsBridge.dataBridgeAvailable()) {
-                segments.put(Segment.ADVANCEMENTS, NmsBridge.captureAdvancements(player));
+                segments.put(Segment.ADVANCEMENTS, timed("capture.advancements", () -> NmsBridge.captureAdvancements(player)));
             }
             if (config.enabled(Segment.STATISTICS) && NmsBridge.dataBridgeAvailable()) {
-                segments.put(Segment.STATISTICS, NmsBridge.captureStatistics(player));
+                segments.put(Segment.STATISTICS, timed("capture.statistics", () -> NmsBridge.captureStatistics(player)));
             }
             if (config.enabled(Segment.MAPS) && NmsBridge.mapBridgeAvailable()) {
                 byte[] maps = NmsBridge.captureMaps(player);
@@ -86,7 +87,7 @@ public final class CaptureService {
                 }
             }
             if (config.enabled(Segment.MISC)) {
-                segments.put(Segment.MISC, miscData(player, carriedOverride).encode());
+                segments.put(Segment.MISC, timed("capture.misc", () -> miscData(player, carriedOverride).encode()));
             }
 
             SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, NmsBridge.dataVersion(), segments);
@@ -97,13 +98,23 @@ public final class CaptureService {
             if (config.logTimings()) {
                 logger.fine("capture " + cause + " took " + (System.nanoTime() - start) / 1_000_000.0 + "ms");
             }
-            SnapshotMessage message = new SnapshotMessage(0L, captureSeq, cause, serverId, envelope.encode());
+            byte[] encoded = timed("capture.encode", envelope::encode);
+            SnapshotMessage message = new SnapshotMessage(0L, captureSeq, cause, serverId, encoded);
             Bukkit.getPluginManager().callEvent(new MikuDataSyncCaptureEvent(player, cause, message));
             return message;
         } catch (Exception e) {
             Metrics.recordCapture(System.nanoTime() - start);
             logger.severe("Failed to capture snapshot for " + player.getName() + ": " + e);
             return null;
+        }
+    }
+
+    private static byte[] timed(String stage, java.util.function.Supplier<byte[]> supplier) {
+        long start = System.nanoTime();
+        try {
+            return supplier.get();
+        } finally {
+            StageMetrics.record(stage, System.nanoTime() - start);
         }
     }
 

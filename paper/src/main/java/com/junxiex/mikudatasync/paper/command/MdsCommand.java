@@ -3,6 +3,8 @@ package com.junxiex.mikudatasync.paper.command;
 import com.junxiex.mikudatasync.common.CodecBench;
 import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
+import com.junxiex.mikudatasync.common.StageMetrics;
+import com.junxiex.mikudatasync.common.StageMetrics;
 import com.junxiex.mikudatasync.paper.CaptureService;
 import com.junxiex.mikudatasync.paper.IpcClient;
 import com.junxiex.mikudatasync.paper.MikuDataSyncPaper;
@@ -30,6 +32,10 @@ public final class MdsCommand {
                     context.getSource().getSender().sendMessage(Component.text(
                             "MikuDataSync | ipc=" + ipcClient.state() + " | server=" + config.serverId()
                                     + " | " + Metrics.captureSummary() + " | " + Metrics.applySummary()));
+                    return Command.SINGLE_SUCCESS;
+                }))
+                .then(Commands.literal("timings").executes(context -> {
+                    context.getSource().getSender().sendMessage(Component.text(StageMetrics.summary()));
                     return Command.SINGLE_SUCCESS;
                 }))
                 .then(Commands.literal("bench").executes(context -> {

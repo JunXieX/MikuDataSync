@@ -9,6 +9,7 @@ import com.mojang.brigadier.tree.LiteralCommandNode;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import net.kyori.adventure.text.Component;
+import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -78,6 +79,13 @@ public final class DebugCommand {
                                 .then(Commands.argument("value", StringArgumentType.word())
                                         .executes(context -> mapFill(context.getSource().getSender(), config,
                                                 StringArgumentType.getString(context, "value"))))))
+                .then(Commands.literal("workload")
+                        .then(Commands.literal("fill")
+                                .then(Commands.argument("stacks", StringArgumentType.word())
+                                        .then(Commands.argument("kb", StringArgumentType.word())
+                                                .executes(context -> workloadFill(context.getSource().getSender(), config,
+                                                        StringArgumentType.getString(context, "stacks"),
+                                                        StringArgumentType.getString(context, "kb")))))))
                 .then(Commands.literal("item")
                         .then(Commands.literal("set")
                                 .then(Commands.argument("payload", StringArgumentType.greedyString())
@@ -182,6 +190,38 @@ public final class DebugCommand {
             return Command.SINGLE_SUCCESS;
         } catch (Exception e) {
             sender.sendMessage(Component.text("failed: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int workloadFill(CommandSender sender, PaperConfig config, String stacksArg, String kbArg) {
+        if (!enabled(sender, config)) {
+            return 0;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("players only"));
+            return 0;
+        }
+        try {
+            int stacks = Math.max(1, Math.min(36, Integer.parseInt(stacksArg)));
+            int kb = Math.max(1, Math.min(16, Integer.parseInt(kbArg)));
+            String payload = "x".repeat(kb * 1024);
+            NamespacedKey key = NamespacedKey.fromString("mikudatasync:workload");
+            ItemStack item = new ItemStack(Material.PAPER, 1);
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) {
+                return 0;
+            }
+            meta.displayName(Component.text("workload"));
+            meta.getPersistentDataContainer().set(key, PersistentDataType.STRING, payload);
+            item.setItemMeta(meta);
+            for (int i = 0; i < stacks; i++) {
+                player.getInventory().setItem(i, item.clone());
+            }
+            sender.sendMessage(Component.text("workload: " + stacks + " stacks x " + kb + "KB PDC"));
+            return Command.SINGLE_SUCCESS;
+        } catch (NumberFormatException e) {
+            sender.sendMessage(Component.text("stacks/kb must be numbers"));
             return 0;
         }
     }
