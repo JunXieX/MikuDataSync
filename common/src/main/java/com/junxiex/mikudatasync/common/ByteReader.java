@@ -58,6 +58,14 @@ public final class ByteReader {
         return value;
     }
 
+    public float readFloat() throws ProtocolException {
+        return Float.intBitsToFloat(readInt());
+    }
+
+    public double readDouble() throws ProtocolException {
+        return Double.longBitsToDouble(readLong());
+    }
+
     public int readVarInt() throws ProtocolException {
         int value = 0;
         int shift = 0;

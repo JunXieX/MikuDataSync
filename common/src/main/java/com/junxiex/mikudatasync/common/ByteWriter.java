@@ -62,6 +62,14 @@ public final class ByteWriter {
         return this;
     }
 
+    public ByteWriter writeFloat(float value) {
+        return writeInt(Float.floatToIntBits(value));
+    }
+
+    public ByteWriter writeDouble(double value) {
+        return writeLong(Double.doubleToLongBits(value));
+    }
+
     public ByteWriter writeVarInt(int value) {
         int current = value;
         while ((current & ~0x7F) != 0) {
