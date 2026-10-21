@@ -1,0 +1,141 @@
+package com.junxiex.mikudatasync.common;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class CodecCoverageTest {
+
+    private static SnapshotMessage message(long seq, SnapshotEnvelope envelope) {
+        return new SnapshotMessage(seq, seq + 10, "switch", "server-1", envelope);
+    }
+
+    @Test
+    void envelopeRoundTripWithAllSegmentIds() throws Exception {
+        SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 4321, Map.of(
+                Segment.CORE, new byte[] {1, 2, 3},
+                Segment.INVENTORY, new byte[] {4, 5},
+                Segment.ENDER_CHEST, new byte[] {6},
+                Segment.EFFECTS, new byte[] {7},
+                Segment.ATTRIBUTES, new byte[] {8},
+                Segment.ADVANCEMENTS, new byte[] {9},
+                Segment.STATISTICS, new byte[] {10},
+                Segment.PDC, new byte[] {11},
+                Segment.RECIPES, new byte[] {12},
+                Segment.LOCATION, new byte[] {13},
+                Segment.MISC, new byte[] {14}
+        ));
+        SnapshotEnvelope decoded = SnapshotEnvelope.decode(envelope.encode());
+        assertEquals(4321, decoded.dataVersion());
+        assertEquals(11, decoded.segments().size());
+        assertEquals(3, decoded.segment(Segment.CORE).length);
+        assertTrue(decoded.hasSegment(Segment.MISC));
+    }
+
+    @Test
+    void envelopeRejectsCorruption() throws Exception {
+        SnapshotEnvelope envelope = new SnapshotEnvelope(1, 1, Map.of(Segment.CORE, new byte[] {1, 2, 3}));
+        byte[] bytes = envelope.encode();
+        bytes[16] ^= 0x7F;
+        assertThrows(ProtocolException.class, () -> SnapshotEnvelope.decode(bytes));
+    }
+
+    @Test
+    void envelopeRejectsBadMagicAndShort() {
+        assertThrows(ProtocolException.class, () -> SnapshotEnvelope.decode(new byte[3]));
+        byte[] bytes = new SnapshotEnvelope(1, 1, Map.of(Segment.CORE, new byte[] {1})).encode();
+        bytes[0] = 0;
+        assertThrows(ProtocolException.class, () -> SnapshotEnvelope.decode(bytes));
+    }
+
+    @Test
+    void envelopeRejectsOversizedSegmentAndInvalidId() {
+        byte[] big = new byte[Protocol.MAX_SEGMENT_BYTES + 1];
+        assertThrows(ProtocolException.class,
+                () -> new SnapshotEnvelope(1, 1, Map.of(Segment.CORE, big)).encode());
+        assertThrows(ProtocolException.class,
+                () -> new SnapshotEnvelope(1, 1, Map.of(0, new byte[] {1})).encode());
+    }
+
+    @Test
+    void ipcPayloadsRoundTrip() throws Exception {
+        UUID uuid = UUID.randomUUID();
+        assertEquals(uuid, IpcPayloads.parseUuid(IpcPayloads.uuid(uuid)));
+
+        UUID[] out = new UUID[1];
+        long seq = IpcPayloads.readAck(IpcPayloads.ack(uuid, 42L), out);
+        assertEquals(42L, seq);
+        assertEquals(uuid, out[0]);
+        assertEquals(77L, IpcPayloads.readPutOk(IpcPayloads.putOk(77L)));
+
+        SnapshotEnvelope envelope = new SnapshotEnvelope(1, 99, Map.of(Segment.CORE, new byte[] {1}));
+        SnapshotMessage msg = message(3, envelope);
+        byte[] found = IpcPayloads.snapshotFound(msg);
+        SnapshotMessage decoded = IpcPayloads.readSnapshotResponse(found);
+        assertEquals(3L, decoded.seq());
+        assertNull(IpcPayloads.readSnapshotResponse(IpcPayloads.snapshotMissing()));
+
+        UUID[] putUuid = new UUID[1];
+        SnapshotMessage put = IpcPayloads.readPutRequest(IpcPayloads.putRequest(uuid, msg), putUuid);
+        assertEquals(uuid, putUuid[0]);
+        assertEquals(msg.seq(), put.seq());
+    }
+
+    @Test
+    void effectAttributeMiscAndNackRoundTrip() throws Exception {
+        List<EffectList.Entry> effects = List.of(
+                new EffectList.Entry("minecraft:speed", 600, 2, true, false, true),
+                new EffectList.Entry("minecraft:regeneration", 100, 0, false, true, false));
+        assertEquals(effects, EffectList.decode(EffectList.encode(effects)));
+
+        List<AttributeList.Entry> attributes = List.of(
+                new AttributeList.Entry("minecraft:generic.max_health", 20.0),
+                new AttributeList.Entry("minecraft:generic.movement_speed", 0.1));
+        assertEquals(attributes, AttributeList.decode(AttributeList.encode(attributes)));
+
+        MiscData misc = new MiscData(true, new byte[] {9, 8, 7});
+        assertEquals(misc, MiscData.decode(misc.encode()));
+        assertEquals(MiscData.EMPTY, MiscData.decode(MiscData.EMPTY.encode()));
+
+        UUID uuid = UUID.randomUUID();
+        NackMessage nack = new NackMessage(uuid, 12L, "apply_failed", "boom");
+        assertEquals(nack, NackMessage.decode(nack.encode()));
+    }
+
+    @Test
+    void miniYamlNestedAndTypedValues() throws Exception {
+        Map<String, Object> root = MiniYaml.parse(String.join("\n",
+                "protocol:",
+                "  bind: 127.0.0.1",
+                "  port: 25666",
+                "  secret: abcdefghijklmnop",
+                "store:",
+                "  fsync-mode: interval",
+                "  retain: false",
+                "list: []",
+                "map: {}",
+                ""));
+        assertEquals("127.0.0.1", MiniYaml.getString(root, "protocol.bind", "x"));
+        assertEquals(25666, MiniYaml.getInt(root, "protocol.port", 1));
+        assertFalse(MiniYaml.getBoolean(root, "store.retain", true));
+        assertEquals("interval", MiniYaml.getString(root, "store.fsync-mode", "x"));
+    }
+
+    @Test
+    void hmacVerification() {
+        String secret = "test-secret-0123456789";
+        String payload = "server-1|123|nonce|1";
+        String hex = HmacAuth.signHex(secret, payload);
+        assertTrue(HmacAuth.verifyHex(secret, payload, hex));
+        assertFalse(HmacAuth.verifyHex(secret, payload + "x", hex));
+        assertFalse(HmacAuth.verifyHex(secret, payload, "zz-not-hex"));
+    }
+}

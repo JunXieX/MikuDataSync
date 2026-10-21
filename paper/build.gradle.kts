@@ -6,6 +6,7 @@ val commonProject = project(":common")
 dependencies {
     implementation(commonProject)
     compileOnly("io.papermc.paper:paper-api:26.3.build.+")
+    testImplementation("io.papermc.paper:paper-api:26.3.build.+")
 }
 
 tasks.jar {

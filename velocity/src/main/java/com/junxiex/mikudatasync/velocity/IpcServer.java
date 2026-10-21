@@ -78,6 +78,10 @@ public final class IpcServer implements AutoCloseable {
         logger.info("MikuDataSync IPC listening on {}:{}", config.bindHost(), config.bindPort());
     }
 
+    public int boundPort() {
+        return serverSocket == null ? -1 : serverSocket.getLocalPort();
+    }
+
     public boolean isRunning() {
         return serverSocket != null && !serverSocket.isClosed();
     }

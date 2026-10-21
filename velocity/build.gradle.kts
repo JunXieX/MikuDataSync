@@ -7,6 +7,7 @@ dependencies {
     implementation(commonProject)
     compileOnly("com.velocitypowered:velocity-api:4.3.0")
     annotationProcessor("com.velocitypowered:velocity-api:4.3.0")
+    testImplementation("org.slf4j:slf4j-simple:2.0.16")
 }
 
 tasks.jar {
