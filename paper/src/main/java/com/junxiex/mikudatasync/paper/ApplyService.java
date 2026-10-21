@@ -151,8 +151,16 @@ public final class ApplyService {
         }
         try {
             MiscData misc = MiscData.decode(envelope.segment(Segment.MISC));
-            if (misc.hasCursorItem()) {
-                NmsBridge.setCarriedItem(player, ItemStack.deserializeBytes(misc.cursorItem()));
+            if (!misc.hasCursorItem()) {
+                return;
+            }
+            // The vanilla cursor slot lives on the current menu and is discarded/returned when a
+            // new container opens; putting the item into the inventory is the only loss-free
+            // representation across arbitrary menu transitions.
+            ItemStack cursor = ItemStack.deserializeBytes(misc.cursorItem());
+            var leftover = player.getInventory().addItem(cursor);
+            for (ItemStack item : leftover.values()) {
+                player.getWorld().dropItemNaturally(player.getLocation(), item);
             }
         } catch (Exception e) {
             throw new IllegalStateException("failed to restore cursor item", e);
