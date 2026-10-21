@@ -57,6 +57,7 @@
 | `/mds status` | 查看同步状态（代理端显示在线快照数与 IPC 状态） | `mikudatasync.admin` |
 | `/mds stats` | 查看快照数量、日志大小、fsync 模式 | `mikudatasync.admin` |
 | `/mds doctor` | 自检配置、IPC 与日志状态 | `mikudatasync.admin` |
+| `/mds bench` | 在本服运行一次 codec 微基准（p50/p95） | `mikudatasync.admin` |
 
 ## 同步范围
 
@@ -66,7 +67,7 @@
 - 游戏模式、飞行状态、飞行/行走速度、选中快捷栏
 - 属性基础值（装备与药水产生的修饰符由游戏重新计算，不重复同步）
 - 玩家 PDC（整体无损替换，含嵌套 Compound 与数组）
-- 进度与统计（开发中；将以“静默写”方式应用，避免进度奖励被重复发放）
+- 进度（全部已授予 criteria，按 NMS 静默写入，不重放进度奖励）与全类型非零统计
 
 ## 切换语义与数据安全
 

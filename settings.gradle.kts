@@ -1,3 +1,3 @@
 rootProject.name = "MikuDataSync"
 
-include("common", "velocity", "paper")
+include("common", "velocity", "paper", "benchmark")

@@ -1,0 +1,33 @@
+name: benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "bench/**" ]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: current
+
+      - name: Run codec benchmark
+        run: gradle :benchmark:run --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codec-benchmark
+          path: benchmark/build/benchmark-results.txt
+          if-no-files-found: error
