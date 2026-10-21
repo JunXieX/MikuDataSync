@@ -271,6 +271,7 @@ public final class IpcServer implements AutoCloseable {
                 logger.warn("Backend apply failure for {} at seq {}: {} - {}",
                         nack.uuid(), nack.appliedSeq(), nack.code(), nack.message());
             }
+            case BACKUP_RES, RESTORE_RES -> completePending(frame.requestId(), frame);
             case ERROR -> {
                 String message = new ByteReader(frame.payload()).readUtf(512);
                 logger.warn("IPC error from {}: {}", connection.serverId(), message);
