@@ -95,5 +95,6 @@
 | --- | --- |
 | 切服被拒绝 | 查看代理日志中的 `Denying switch`；确认两端 secret、server-id、端口与防火墙 |
 | 进服背包是旧的 | 确认 Paper 与代理日志中 IPC 已连接；检查 `sync.on-sync-unavailable` |
+| 切服被拒绝且日志出现 backend not connected | Paper 的 `proxy.server-id` 必须与 Velocity 中子服名称完全一致（含大小写） |
 | 数据版本不匹配 | 所有子服必须运行同一 MC 版本，升级时先停服统一升级 |
 | 日志增长异常 | 检查 `/mds stats` 的 journal 大小；确认周期快照间隔与玩家数量 |

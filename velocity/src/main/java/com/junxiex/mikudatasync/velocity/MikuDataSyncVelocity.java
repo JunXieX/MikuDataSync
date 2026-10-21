@@ -51,7 +51,10 @@ public final class MikuDataSyncVelocity {
                     config.fsyncIntervalMs(),
                     COMPACTION_THRESHOLD_BYTES);
             store = new SnapshotStore(config.maxSnapshotBytes(), journal);
-            ipcServer = new IpcServer(logger, config, store);
+            java.util.Set<String> knownServers = server.getAllServers().stream()
+                    .map(registered -> registered.getServerInfo().getName())
+                    .collect(java.util.stream.Collectors.toSet());
+            ipcServer = new IpcServer(logger, config, store, knownServers);
             ipcServer.start();
 
             server.getEventManager().register(this, new ProxyListener(logger, store, config));

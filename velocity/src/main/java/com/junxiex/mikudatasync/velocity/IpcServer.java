@@ -24,6 +24,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,6 +45,7 @@ public final class IpcServer implements AutoCloseable {
     private final Logger logger;
     private final VelocityConfig config;
     private final SnapshotStore store;
+    private final Set<String> knownServers;
     private final UUID nodeId = UUID.randomUUID();
     private final Map<String, Connection> connections = new ConcurrentHashMap<>();
     private final Map<Long, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
@@ -59,10 +61,11 @@ public final class IpcServer implements AutoCloseable {
     private ServerSocket serverSocket;
     private Thread acceptThread;
 
-    public IpcServer(Logger logger, VelocityConfig config, SnapshotStore store) {
+    public IpcServer(Logger logger, VelocityConfig config, SnapshotStore store, Set<String> knownServers) {
         this.logger = logger;
         this.config = config;
         this.store = store;
+        this.knownServers = Set.copyOf(knownServers);
     }
 
     public void start() throws IOException {
@@ -94,7 +97,8 @@ public final class IpcServer implements AutoCloseable {
     public CompletableFuture<Frame> request(String serverId, Opcode opcode, byte[] payload, long timeoutMs) {
         Connection connection = connections.get(serverId);
         if (connection == null) {
-            return CompletableFuture.failedFuture(new IOException("backend not connected: " + serverId));
+            return CompletableFuture.failedFuture(new IOException(
+                    "backend not connected: " + serverId + " (proxy.server-id must match the Velocity server name)"));
         }
         long requestId = requestIds.incrementAndGet();
         CompletableFuture<Frame> future = new CompletableFuture<>();
@@ -167,6 +171,10 @@ public final class IpcServer implements AutoCloseable {
                     .writeInt(Protocol.PROTOCOL_VERSION)
                     .writeUtf(nodeId.toString())
                     .toByteArray());
+            if (!knownServers.isEmpty() && !knownServers.contains(serverId)) {
+                logger.warn("Backend server-id '{}' does not match any Velocity server name {}; switches to/from it will fail",
+                        serverId, knownServers);
+            }
             logger.info("IPC backend connected: {}", serverId);
 
             while (!closed.get()) {

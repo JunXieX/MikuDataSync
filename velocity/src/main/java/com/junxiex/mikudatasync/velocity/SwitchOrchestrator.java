@@ -62,6 +62,8 @@ public final class SwitchOrchestrator {
             try {
                 if (error != null) {
                     handleFailure(event, player, sourceServer, error);
+                } else {
+                    logger.info("Snapshot gate passed for {} (source={})", player.getUsername(), sourceServer);
                 }
             } finally {
                 if (error != null) {
