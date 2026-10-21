@@ -14,6 +14,7 @@ public final class Segment {
     public static final int RECIPES = 9;
     public static final int LOCATION = 10;
     public static final int MISC = 11;
+    public static final int MAPS = 12;
 
     private Segment() {
     }
@@ -47,6 +48,7 @@ public final class Segment {
             case RECIPES -> "recipes";
             case LOCATION -> "location";
             case MISC -> "misc";
+            case MAPS -> "maps";
             default -> "unknown(" + id + ")";
         };
     }

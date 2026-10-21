@@ -7,6 +7,10 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.advancement.Advancement;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.MapMeta;
+import org.bukkit.map.MapView;
+
+import com.junxiex.mikudatasync.common.MapDataList;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -37,6 +41,16 @@ public final class NmsBridge {
     private static Method craftAsNMSCopy;
     private static Object nmsEmptyStack;
     private static boolean cursorAvailable;
+
+    // --- maps bridge ---
+    private static boolean mapsAvailable;
+    private static Field craftMapViewWorldMap;
+    private static Field mapColorsField;
+    private static Field mapScaleField;
+    private static Field mapCenterXField;
+    private static Field mapCenterZField;
+    private static Field mapLockedField;
+    private static Method mapSetDirty;
 
     // --- data bridge (statistics + advancements) ---
     private static boolean dataAvailable;
@@ -75,6 +89,7 @@ public final class NmsBridge {
         logger = pluginLogger;
         initializeCursorBridge();
         initializeDataBridge();
+        initializeMapBridge();
     }
 
     public static int dataVersion() {
@@ -87,6 +102,201 @@ public final class NmsBridge {
 
     public static boolean dataBridgeAvailable() {
         return dataAvailable;
+    }
+
+    // ---------------------------------------------------------------- maps
+
+    private static void initializeMapBridge() {
+        try {
+            Class<?> craftMapView = Class.forName("org.bukkit.craftbukkit.map.CraftMapView");
+            Class<?> mapData = Class.forName("net.minecraft.world.level.saveddata.maps.MapItemSavedData");
+            craftMapViewWorldMap = craftMapView.getDeclaredField("worldMap");
+            craftMapViewWorldMap.setAccessible(true);
+            mapColorsField = findField(mapData, "colors");
+            mapScaleField = findField(mapData, "scale");
+            mapCenterXField = findField(mapData, "centerX");
+            mapCenterZField = findField(mapData, "centerZ");
+            mapLockedField = findField(mapData, "locked");
+            try {
+                mapSetDirty = Class.forName("net.minecraft.world.level.saveddata.SavedData")
+                        .getMethod("setDirty");
+            } catch (Throwable ignored) {
+                mapSetDirty = null;
+            }
+            mapsAvailable = true;
+        } catch (Throwable t) {
+            logger.warning("NMS map bridge unavailable: " + t);
+            mapsAvailable = false;
+        }
+    }
+
+    public static boolean mapBridgeAvailable() {
+        return mapsAvailable;
+    }
+
+    public record MapInfo(int mapId, byte scale, int centerX, int centerZ, boolean locked, int checksum) {
+    }
+
+    public static MapInfo mapInfo(Player player) {
+        if (!mapsAvailable || player == null) {
+            return null;
+        }
+        ItemStack item = player.getInventory().getItemInMainHand();
+        if (item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
+            return null;
+        }
+        MapView view = Bukkit.getMap(meta.getMapId());
+        if (view == null) {
+            return null;
+        }
+        try {
+            Object handle = mapHandle(view);
+            byte[] colors = (byte[]) mapColorsField.get(handle);
+            int checksum = colors == null ? 0 : checksum(colors);
+            return new MapInfo(meta.getMapId(), (byte) mapScaleField.get(handle),
+                    (int) mapCenterXField.get(handle), (int) mapCenterZField.get(handle),
+                    (boolean) mapLockedField.get(handle), checksum);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    public static boolean fillHeldMap(Player player, byte value) {
+        if (!mapsAvailable || player == null) {
+            return false;
+        }
+        ItemStack item = player.getInventory().getItemInMainHand();
+        if (item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
+            return false;
+        }
+        MapView view = Bukkit.getMap(meta.getMapId());
+        if (view == null) {
+            return false;
+        }
+        try {
+            Object handle = mapHandle(view);
+            byte[] colors = (byte[]) mapColorsField.get(handle);
+            if (colors == null || colors.length != MapDataList.COLORS_LENGTH) {
+                colors = new byte[MapDataList.COLORS_LENGTH];
+            }
+            java.util.Arrays.fill(colors, value);
+            mapColorsField.set(handle, colors);
+            markDirty(handle);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public static byte[] captureMaps(Player player) {
+        if (!mapsAvailable || player == null) {
+            return null;
+        }
+        Map<Integer, MapDataList.Entry> maps = new java.util.LinkedHashMap<>();
+        collectMaps(player.getInventory().getContents(), maps);
+        collectMaps(player.getEnderChest().getContents(), maps);
+        if (maps.isEmpty()) {
+            return null;
+        }
+        List<MapDataList.Entry> entries = new ArrayList<>(maps.values());
+        if (entries.size() > MapDataList.MAX_MAPS) {
+            entries = entries.subList(0, MapDataList.MAX_MAPS);
+        }
+        return MapDataList.encode(entries);
+    }
+
+    private static void collectMaps(ItemStack[] items, Map<Integer, MapDataList.Entry> out) {
+        if (items == null) {
+            return;
+        }
+        for (ItemStack item : items) {
+            if (item == null || item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
+                continue;
+            }
+            int id = meta.getMapId();
+            if (out.containsKey(id)) {
+                continue;
+            }
+            MapView view = Bukkit.getMap(id);
+            if (view == null) {
+                continue;
+            }
+            try {
+                Object handle = mapHandle(view);
+                byte[] colors = (byte[]) mapColorsField.get(handle);
+                if (colors == null || colors.length != MapDataList.COLORS_LENGTH) {
+                    continue;
+                }
+                out.put(id, new MapDataList.Entry(id, (byte) mapScaleField.get(handle),
+                        (int) mapCenterXField.get(handle), (int) mapCenterZField.get(handle),
+                        (boolean) mapLockedField.get(handle), colors.clone()));
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    public static void applyMaps(Player player, byte[] payload) throws Exception {
+        if (!mapsAvailable || player == null || payload == null) {
+            return;
+        }
+        List<MapDataList.Entry> entries = MapDataList.decode(payload);
+        Map<Integer, Integer> mapped = new HashMap<>();
+        for (MapDataList.Entry entry : entries) {
+            MapView view = Bukkit.createMap(player.getWorld());
+            Object handle = mapHandle(view);
+            mapColorsField.set(handle, entry.colors().clone());
+            mapScaleField.set(handle, entry.scale());
+            mapCenterXField.set(handle, entry.centerX());
+            mapCenterZField.set(handle, entry.centerZ());
+            mapLockedField.set(handle, entry.locked());
+            markDirty(handle);
+            mapped.put(entry.mapId(), view.getId());
+        }
+        rewriteMapItems(player.getInventory().getContents(), mapped, player.getInventory());
+        rewriteMapItems(player.getEnderChest().getContents(), mapped, player.getEnderChest());
+    }
+
+    private static void rewriteMapItems(ItemStack[] items, Map<Integer, Integer> mapped,
+                                        org.bukkit.inventory.Inventory inventory) {
+        if (items == null) {
+            return;
+        }
+        for (int i = 0; i < items.length; i++) {
+            ItemStack item = items[i];
+            if (item == null || item.getType().isAir()) {
+                continue;
+            }
+            if (!(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
+                continue;
+            }
+            Integer newId = mapped.get(meta.getMapId());
+            if (newId == null) {
+                continue;
+            }
+            meta.setMapId(newId);
+            item.setItemMeta(meta);
+            inventory.setItem(i, item);
+        }
+    }
+
+    private static void markDirty(Object handle) {
+        if (mapSetDirty == null) {
+            return;
+        }
+        try {
+            mapSetDirty.invoke(handle);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static Object mapHandle(MapView view) throws Exception {
+        return craftMapViewWorldMap.get(view);
+    }
+
+    private static int checksum(byte[] colors) {
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(colors);
+        return (int) crc.getValue();
     }
 
     // ---------------------------------------------------------------- cursor

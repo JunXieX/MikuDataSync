@@ -79,6 +79,12 @@ public final class CaptureService {
             if (config.enabled(Segment.STATISTICS) && NmsBridge.dataBridgeAvailable()) {
                 segments.put(Segment.STATISTICS, NmsBridge.captureStatistics(player));
             }
+            if (config.enabled(Segment.MAPS) && NmsBridge.mapBridgeAvailable()) {
+                byte[] maps = NmsBridge.captureMaps(player);
+                if (maps != null) {
+                    segments.put(Segment.MAPS, maps);
+                }
+            }
             if (config.enabled(Segment.MISC)) {
                 segments.put(Segment.MISC, miscData(player, carriedOverride).encode());
             }

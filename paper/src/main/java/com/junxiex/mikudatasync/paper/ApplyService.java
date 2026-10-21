@@ -122,6 +122,14 @@ public final class ApplyService {
             int slot = Math.max(0, Math.min(8, core.heldSlot()));
             player.getInventory().setHeldItemSlot(slot);
         }
+        byte[] maps = envelope.segment(Segment.MAPS);
+        if (maps != null) {
+            try {
+                NmsBridge.applyMaps(player, maps);
+            } catch (Exception e) {
+                Bukkit.getLogger().warning("Failed to apply map data: " + e.getMessage());
+            }
+        }
         if (pdc != null) {
             if (config.pdcMerge()) {
                 ItemStack carrier = new ItemStack(Material.STONE);

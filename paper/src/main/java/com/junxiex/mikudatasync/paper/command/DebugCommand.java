@@ -71,6 +71,12 @@ public final class DebugCommand {
                             sender.sendMessage(Component.text("player PDC cleared"));
                             return Command.SINGLE_SUCCESS;
                         })))
+                .then(Commands.literal("map")
+                        .then(Commands.literal("info").executes(context -> mapInfo(context.getSource().getSender(), config)))
+                        .then(Commands.literal("fill")
+                                .then(Commands.argument("value", StringArgumentType.word())
+                                        .executes(context -> mapFill(context.getSource().getSender(), config,
+                                                StringArgumentType.getString(context, "value"))))))
                 .then(Commands.literal("item")
                         .then(Commands.literal("set")
                                 .then(Commands.argument("payload", StringArgumentType.greedyString())
@@ -175,6 +181,40 @@ public final class DebugCommand {
             return Command.SINGLE_SUCCESS;
         } catch (Exception e) {
             sender.sendMessage(Component.text("failed: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int mapInfo(CommandSender sender, PaperConfig config) {
+        if (!enabled(sender, config)) {
+            return 0;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("players only"));
+            return 0;
+        }
+        var info = NmsBridge.mapInfo(player);
+        sender.sendMessage(Component.text(info == null ? "no filled map in main hand"
+                : "map id=" + info.mapId() + " scale=" + info.scale() + " center=" + info.centerX() + ","
+                + info.centerZ() + " locked=" + info.locked() + " checksum=" + info.checksum()));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int mapFill(CommandSender sender, PaperConfig config, String value) {
+        if (!enabled(sender, config)) {
+            return 0;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("players only"));
+            return 0;
+        }
+        try {
+            byte color = Byte.parseByte(value);
+            boolean ok = NmsBridge.fillHeldMap(player, color);
+            sender.sendMessage(Component.text(ok ? "map filled with " + color : "no filled map in main hand"));
+            return ok ? Command.SINGLE_SUCCESS : 0;
+        } catch (NumberFormatException e) {
+            sender.sendMessage(Component.text("value must be a byte -128..127"));
             return 0;
         }
     }

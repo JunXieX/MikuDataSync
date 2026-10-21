@@ -63,6 +63,9 @@ public record PaperConfig(
         if (cfg.getBoolean("sync.sections.pdc", true)) {
             segments.add(Segment.PDC);
         }
+        if (cfg.getBoolean("sync.sections.maps", true)) {
+            segments.add(Segment.MAPS);
+        }
         if (cfg.getBoolean("sync.sections.cursor-item", true)) {
             segments.add(Segment.MISC);
         }

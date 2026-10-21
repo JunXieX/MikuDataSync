@@ -136,6 +136,21 @@ class CodecCoverageTest {
     }
 
     @Test
+    void mapDataRoundTrip() throws Exception {
+        byte[] colors = new byte[MapDataList.COLORS_LENGTH];
+        java.util.Arrays.fill(colors, (byte) 7);
+        MapDataList.Entry entry = new MapDataList.Entry(42, (byte) 2, 100, -200, true, colors);
+        List<MapDataList.Entry> decoded = MapDataList.decode(MapDataList.encode(List.of(entry)));
+        assertEquals(1, decoded.size());
+        assertEquals(42, decoded.get(0).mapId());
+        assertEquals((byte) 2, decoded.get(0).scale());
+        assertEquals(100, decoded.get(0).centerX());
+        assertEquals(-200, decoded.get(0).centerZ());
+        assertTrue(decoded.get(0).locked());
+        assertArrayEquals(colors, decoded.get(0).colors());
+    }
+
+    @Test
     void compressionRoundTrip() throws Exception {
         java.util.Random random = new java.util.Random(7L);
         byte[] big = new byte[8192];
