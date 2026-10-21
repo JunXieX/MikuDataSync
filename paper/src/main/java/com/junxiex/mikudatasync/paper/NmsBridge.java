@@ -198,6 +198,8 @@ public final class NmsBridge {
         if (maps.isEmpty()) {
             return null;
         }
+        MapDataList.Entry first = maps.values().iterator().next();
+        logger.info("MDS map capture: " + maps.size() + " maps, first id=" + first.mapId() + " checksum=" + checksum(first.colors()));
         List<MapDataList.Entry> entries = new ArrayList<>(maps.values());
         if (entries.size() > MapDataList.MAX_MAPS) {
             entries = entries.subList(0, MapDataList.MAX_MAPS);
@@ -240,6 +242,7 @@ public final class NmsBridge {
             return;
         }
         List<MapDataList.Entry> entries = MapDataList.decode(payload);
+        logger.info("MDS map apply: " + entries.size() + " maps, first checksum=" + (entries.isEmpty() ? 0 : checksum(entries.get(0).colors())));
         Map<Integer, Integer> mapped = new HashMap<>();
         for (MapDataList.Entry entry : entries) {
             MapView view = Bukkit.createMap(player.getWorld());
@@ -250,6 +253,9 @@ public final class NmsBridge {
             mapCenterZField.set(handle, entry.centerZ());
             mapLockedField.set(handle, entry.locked());
             markDirty(handle);
+            byte[] readBack = (byte[]) mapColorsField.get(handle);
+            logger.info("MDS map apply: source=" + entry.mapId() + " target=" + view.getId()
+                    + " checksum=" + checksum(readBack));
             mapped.put(entry.mapId(), view.getId());
         }
         rewriteMapItems(player.getInventory().getContents(), mapped, player.getInventory());

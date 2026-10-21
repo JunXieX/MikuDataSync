@@ -9,7 +9,7 @@ plugins {
 
 allprojects {
     group = "com.junxiex"
-    version = "1.2.11"
+    version = "1.2.12"
 
     repositories {
         mavenCentral()
