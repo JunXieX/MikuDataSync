@@ -167,13 +167,10 @@ public final class MdsCommand implements SimpleCommand {
             var target = player.get();
             long seq = store.commit(target.getUniqueId(), message);
             target.getCurrentServer().ifPresent(connection ->
-                    ipcServer.send(connection.getServerInfo().getName(), Opcode.RESTORE_NOTICE,
-                            IpcPayloads.uuid(target.getUniqueId())));
+                    ipcServer.send(connection.getServerInfo().getName(), Opcode.RESTORE_APPLY,
+                            IpcPayloads.putRequest(target.getUniqueId(), message)));
             source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
-                    + "; reconnecting player"));
-            server.getScheduler().buildTask(plugin, () ->
-                    target.disconnect(Component.text("数据已恢复，请重新连接")))
-                    .delay(300, TimeUnit.MILLISECONDS).schedule();
+                    + "; applying now"));
         } catch (Exception e) {
             source.sendMessage(Component.text("Restore failed: " + e.getMessage()));
         }

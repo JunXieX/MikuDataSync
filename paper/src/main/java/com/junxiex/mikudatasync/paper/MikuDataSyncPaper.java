@@ -41,12 +41,13 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         handoffManager = new HandoffManager(this, ipcClient, captureService);
 
         PlayerListener playerListener = new PlayerListener(this, config, ipcClient, captureService, applyService, pendingSnapshots, handoffManager);
+        RestoreHandler restoreHandler = new RestoreHandler(this, applyService);
         ipcClient.setFrameHandler(frame -> {
             try {
                 switch (frame.opcode()) {
                     case FLUSH_REQ -> handoffManager.handleFlush(IpcPayloads.parseUuid(frame.payload()), frame.requestId());
                     case HANDOFF_ABORT -> handoffManager.clear(IpcPayloads.parseUuid(frame.payload()));
-                    case RESTORE_NOTICE -> playerListener.markRestored(IpcPayloads.parseUuid(frame.payload()));
+                    case RESTORE_APPLY -> restoreHandler.handle(frame.payload());
                     default -> {
                     }
                 }
