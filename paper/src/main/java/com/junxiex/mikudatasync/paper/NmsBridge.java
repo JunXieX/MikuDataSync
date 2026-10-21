@@ -306,6 +306,30 @@ public final class NmsBridge {
         return mapped;
     }
 
+    /** Re-applies colours to already-created target maps (used to survive late map-data loads). */
+    public static void reapplyMapColors(org.bukkit.World world, List<MapDataList.Entry> entries,
+                                       Map<Integer, Integer> mapped) {
+        for (MapDataList.Entry entry : entries) {
+            Integer target = mapped.get(entry.mapId());
+            if (target == null) {
+                continue;
+            }
+            try {
+                Object data = mapData(world, target);
+                if (data == null) {
+                    continue;
+                }
+                mapColorsField.set(data, entry.colors().clone());
+                mapScaleField.set(data, entry.scale());
+                mapCenterXField.set(data, entry.centerX());
+                mapCenterZField.set(data, entry.centerZ());
+                mapLockedField.set(data, entry.locked());
+                markDirty(data);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     public static void rewriteMapItems(Player player, Map<Integer, Integer> mapped) {
         if (mapped == null || mapped.isEmpty()) {
             return;

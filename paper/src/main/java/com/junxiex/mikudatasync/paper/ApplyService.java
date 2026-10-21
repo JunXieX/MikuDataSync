@@ -165,6 +165,10 @@ public final class ApplyService {
                             NmsBridge.rewriteMapItems(player, mapped);
                             player.updateInventory();
                         });
+                        // Folia may load the real map data after creation; re-apply once later so the
+                        // snapshot colours win over the freshly loaded default data.
+                        PluginSchedulers.runDelayed(plugin, player, () -> PluginSchedulers.runOnGlobal(plugin,
+                                () -> NmsBridge.reapplyMapColors(player.getWorld(), entries, mapped)), 100L);
                     } catch (Exception e) {
                         Bukkit.getLogger().warning("Failed to create map data: " + e.getMessage());
                     }
