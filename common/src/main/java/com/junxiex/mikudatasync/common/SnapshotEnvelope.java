@@ -127,7 +127,7 @@ public final class SnapshotEnvelope {
         if (rawLength < 0 || rawLength > Protocol.MAX_SNAPSHOT_BYTES) {
             throw new ProtocolException("invalid inner length: " + rawLength);
         }
-        int payloadLength = bytes.length - 18;
+        int payloadLength = bytes.length - 14;
         if (payloadLength < 0) {
             throw new ProtocolException("snapshot payload is too small");
         }
