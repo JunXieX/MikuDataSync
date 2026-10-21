@@ -28,7 +28,7 @@ public final class DebugCommand {
             PersistentDataType.STRING, PersistentDataType.INTEGER, PersistentDataType.LONG,
             PersistentDataType.DOUBLE, PersistentDataType.FLOAT, PersistentDataType.BYTE,
             PersistentDataType.SHORT, PersistentDataType.BYTE_ARRAY,
-            PersistentDataType.INT_ARRAY, PersistentDataType.LONG_ARRAY);
+            PersistentDataType.INTEGER_ARRAY, PersistentDataType.LONG_ARRAY);
 
     private DebugCommand() {
     }
@@ -259,7 +259,7 @@ public final class DebugCommand {
             case "byte" -> pdc.set(key, PersistentDataType.BYTE, Byte.parseByte(raw.trim()));
             case "short" -> pdc.set(key, PersistentDataType.SHORT, Short.parseShort(raw.trim()));
             case "byte_array" -> pdc.set(key, PersistentDataType.BYTE_ARRAY, parseBytes(raw));
-            case "int_array" -> pdc.set(key, PersistentDataType.INT_ARRAY, parseInts(raw));
+            case "int_array" -> pdc.set(key, PersistentDataType.INTEGER_ARRAY, parseInts(raw));
             case "long_array" -> pdc.set(key, PersistentDataType.LONG_ARRAY, parseLongs(raw));
             default -> throw new IllegalArgumentException("type must be string/int/long/double/float/byte/short/byte_array/int_array/long_array");
         }
@@ -288,7 +288,7 @@ public final class DebugCommand {
         if (type == PersistentDataType.BYTE) return "byte";
         if (type == PersistentDataType.SHORT) return "short";
         if (type == PersistentDataType.BYTE_ARRAY) return "byte_array";
-        if (type == PersistentDataType.INT_ARRAY) return "int_array";
+        if (type == PersistentDataType.INTEGER_ARRAY) return "int_array";
         if (type == PersistentDataType.LONG_ARRAY) return "long_array";
         return "?";
     }
