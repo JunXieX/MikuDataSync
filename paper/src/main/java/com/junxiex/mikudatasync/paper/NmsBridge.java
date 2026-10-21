@@ -264,9 +264,17 @@ public final class NmsBridge {
 
     public static Map<Integer, Integer> createMaps(org.bukkit.World world, List<MapDataList.Entry> entries) throws Exception {
         Map<Integer, Integer> mapped = new HashMap<>();
+        StringBuilder existing = new StringBuilder();
+        for (int i = 0; i < 8; i++) {
+            MapView v = Bukkit.getMap(i);
+            existing.append(i).append('=').append(v == null ? "null" : "obj").append(' ');
+        }
+        logger.info("MDS map registry before create: " + existing);
         for (MapDataList.Entry entry : entries) {
             MapView view = Bukkit.createMap(world);
             MapView registered = Bukkit.getMap(view.getId());
+            logger.info("MDS map create id=" + view.getId() + " registered=" + (registered == null ? "null"
+                    : registered == view ? "same" : "different"));
             if (registered != null) {
                 view = registered;
             }
