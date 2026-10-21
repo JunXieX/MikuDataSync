@@ -25,7 +25,8 @@ public record VelocityConfig(
         int periodicFlushSeconds,
         int maxSnapshotBytes,
         int readTimeoutMs,
-        boolean retainOffline
+        boolean retainOffline,
+        int backupsKeep
 ) {
 
     public enum FsyncMode {
@@ -63,6 +64,7 @@ public record VelocityConfig(
         String failMode = MiniYaml.getString(root, "sync.fail-mode", "closed");
         int periodicFlushSeconds = MiniYaml.getInt(root, "sync.periodic-flush-seconds", 30);
         int maxSnapshotBytes = MiniYaml.getInt(root, "sync.max-snapshot-bytes", Protocol.MAX_SNAPSHOT_BYTES);
+        int backupsKeep = Math.max(1, Math.min(1000, MiniYaml.getInt(root, "backups.keep", 20)));
 
         if (secret.length() < 16) {
             throw new ConfigException("protocol.secret must be at least 16 characters");
@@ -102,7 +104,8 @@ public record VelocityConfig(
                 periodicFlushSeconds,
                 maxSnapshotBytes,
                 readTimeoutMs,
-                retainOffline
+                retainOffline,
+                backupsKeep
         );
     }
 

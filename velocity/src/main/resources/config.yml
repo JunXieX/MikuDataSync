@@ -12,6 +12,9 @@ store:
   compaction-threshold-mb: 64
   retain-offline-snapshots: false
 
+backups:
+  keep: 20
+
 sync:
   switch-timeout-ms: 1500
   get-wait-ms: 300

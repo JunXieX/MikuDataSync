@@ -198,6 +198,15 @@ public final class NmsBridge {
         }
         Object handle = craftGetHandle.invoke(player);
         Object counter = serverPlayerStatsField.get(handle);
+        Object existingRaw = statsCounterStatsField.get(counter);
+        if (existingRaw instanceof Map<?, ?> existingStats) {
+            for (Object stat : new ArrayList<>(existingStats.keySet())) {
+                try {
+                    statsCounterSetValue.invoke(counter, handle, stat, 0);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
         for (StatisticsList.Entry entry : StatisticsList.decode(payload)) {
             Object statType = registryGetValue.invoke(statTypeRegistry, identifier(entry.statTypeKey()));
             if (statType == null) {
@@ -275,7 +284,12 @@ public final class NmsBridge {
         }
         Object handle = craftGetHandle.invoke(player);
         Object playerAdvancements = serverPlayerAdvancementsField.get(handle);
-        for (AdvancementList.Entry entry : AdvancementList.decode(payload)) {
+        List<AdvancementList.Entry> entries = AdvancementList.decode(payload);
+        Set<String> desiredKeys = new HashSet<>();
+        for (AdvancementList.Entry entry : entries) {
+            desiredKeys.add(entry.advancementKey());
+        }
+        for (AdvancementList.Entry entry : entries) {
             NamespacedKey key = NamespacedKey.fromString(entry.advancementKey());
             if (key == null) {
                 continue;
@@ -310,6 +324,30 @@ public final class NmsBridge {
                     advancementGrantProgress.invoke(progress, criterion);
                 } catch (Throwable ignored) {
                     // Criterion no longer exists (datapack change) - skip it.
+                }
+            }
+        }
+        if (strict) {
+            // Revoke progress that exists only on the target server, so the snapshot is authoritative.
+            Object mapRaw = playerAdvancementsProgressField.get(playerAdvancements);
+            if (mapRaw instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> mapEntry : new ArrayList<>(map.entrySet())) {
+                    Object holder = mapEntry.getKey();
+                    Object progress = mapEntry.getValue();
+                    Object id = advancementHolderId.invoke(holder);
+                    if (id == null || desiredKeys.contains(id.toString()) || progress == null) {
+                        continue;
+                    }
+                    Object completedRaw = advancementGetCompletedCriteria.invoke(progress);
+                    if (completedRaw instanceof Iterable<?> completed) {
+                        List<String> revoke = new ArrayList<>();
+                        for (Object criterion : completed) {
+                            revoke.add(String.valueOf(criterion));
+                        }
+                        for (String criterion : revoke) {
+                            advancementRevokeProgress.invoke(progress, criterion);
+                        }
+                    }
                 }
             }
         }

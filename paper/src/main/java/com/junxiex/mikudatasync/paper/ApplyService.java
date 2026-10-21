@@ -9,6 +9,8 @@ import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.Segment;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
+import com.junxiex.mikudatasync.paper.api.MikuDataSyncApplyEvent;
+import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -60,6 +62,7 @@ public final class ApplyService {
         byte[] advancements = envelope.segment(Segment.ADVANCEMENTS);
         byte[] statistics = envelope.segment(Segment.STATISTICS);
 
+        Bukkit.getPluginManager().callEvent(new MikuDataSyncApplyEvent(player, envelope));
         if (core != null) {
             player.setGameMode(GameMode.valueOf(core.gameMode()));
         }

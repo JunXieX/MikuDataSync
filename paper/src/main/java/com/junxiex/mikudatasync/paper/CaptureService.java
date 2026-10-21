@@ -4,11 +4,13 @@ import com.junxiex.mikudatasync.common.AttributeList;
 import com.junxiex.mikudatasync.common.CoreData;
 import com.junxiex.mikudatasync.common.EffectList;
 import com.junxiex.mikudatasync.common.Metrics;
+import org.bukkit.Bukkit;
 import com.junxiex.mikudatasync.common.MiscData;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.Segment;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
+import com.junxiex.mikudatasync.paper.api.MikuDataSyncCaptureEvent;
 import org.bukkit.Registry;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
@@ -89,7 +91,9 @@ public final class CaptureService {
             if (config.logTimings()) {
                 logger.fine("capture " + cause + " took " + (System.nanoTime() - start) / 1_000_000.0 + "ms");
             }
-            return new SnapshotMessage(0L, captureSeq, cause, serverId, envelope.encode());
+            SnapshotMessage message = new SnapshotMessage(0L, captureSeq, cause, serverId, envelope.encode());
+            Bukkit.getPluginManager().callEvent(new MikuDataSyncCaptureEvent(player, cause, message));
+            return message;
         } catch (Exception e) {
             Metrics.recordCapture(System.nanoTime() - start);
             logger.severe("Failed to capture snapshot for " + player.getName() + ": " + e);
