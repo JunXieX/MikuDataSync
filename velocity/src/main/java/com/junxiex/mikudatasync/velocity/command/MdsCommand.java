@@ -3,24 +3,30 @@ package com.junxiex.mikudatasync.velocity.command;
 import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.velocity.IpcServer;
+import com.junxiex.mikudatasync.velocity.MikuDataSyncVelocity;
 import com.junxiex.mikudatasync.velocity.SnapshotStore;
 import com.junxiex.mikudatasync.velocity.VelocityConfig;
 import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.command.SimpleCommand;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.Component;
 
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 public final class MdsCommand implements SimpleCommand {
 
+    private final MikuDataSyncVelocity plugin;
     private final ProxyServer server;
     private final SnapshotStore store;
     private final IpcServer ipcServer;
     private final VelocityConfig config;
 
-    public MdsCommand(ProxyServer server, SnapshotStore store, IpcServer ipcServer, VelocityConfig config) {
+    public MdsCommand(MikuDataSyncVelocity plugin, ProxyServer server, SnapshotStore store,
+                      IpcServer ipcServer, VelocityConfig config) {
+        this.plugin = plugin;
         this.server = server;
         this.store = store;
         this.ipcServer = ipcServer;
@@ -68,11 +74,21 @@ public final class MdsCommand implements SimpleCommand {
             source.sendMessage(Component.text("Unknown server: " + targetName));
             return;
         }
-        player.createConnectionRequest(target.get()).connect().whenComplete((result, error) -> {
-            if (error != null) {
-                player.sendMessage(Component.text("Switch failed: " + error.getMessage()));
-            } else if (!result.isSuccessful()) {
-                player.sendMessage(Component.text("Switch failed: " + result.getStatus()));
+        attempt(player, target.get(), targetName, 0);
+    }
+
+    private void attempt(Player player, RegisteredServer target, String targetName, int tries) {
+        player.createConnectionRequest(target).connect().whenComplete((result, error) -> {
+            boolean failed = error != null || !result.isSuccessful();
+            if (failed && tries < 1) {
+                plugin.logger().info("Retrying switch for {} to {} after first failure: {}",
+                        player.getUsername(), targetName, error == null ? result.getStatus() : error.getMessage());
+                server.getScheduler().buildTask(plugin,
+                        () -> attempt(player, target, targetName, tries + 1)).delay(1, TimeUnit.SECONDS).schedule();
+                return;
+            }
+            if (failed) {
+                player.sendMessage(Component.text("Switch failed: " + (error != null ? error.getMessage() : result.getStatus())));
             } else {
                 player.sendMessage(Component.text("Switching to " + targetName));
             }

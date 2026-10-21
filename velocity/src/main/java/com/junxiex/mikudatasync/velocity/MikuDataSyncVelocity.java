@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 @Plugin(
         id = "mikudatasync",
         name = "MikuDataSync",
-        version = "1.0.19",
+        version = "1.0.20",
         description = "Cross-server player data synchronization",
         authors = {"JunXieX"},
         url = "https://github.com/JunXieX/MikuDataSync"
@@ -67,7 +67,7 @@ public final class MikuDataSyncVelocity {
                     .repeat(30L, TimeUnit.SECONDS)
                     .schedule();
             var meta = server.getCommandManager().metaBuilder("mds").plugin(this).build();
-            server.getCommandManager().register(meta, new MdsCommand(server, store, ipcServer, config));
+            server.getCommandManager().register(meta, new MdsCommand(this, server, store, ipcServer, config));
             logger.info("MikuDataSync enabled (protocol {}, journal {})",
                     com.junxiex.mikudatasync.common.Protocol.PROTOCOL_VERSION, store.journalStatus());
         } catch (Exception e) {
