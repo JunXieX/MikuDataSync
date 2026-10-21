@@ -180,5 +180,4 @@ public final class MdsCommand implements SimpleCommand {
             source.sendMessage(Component.text("Restore failed: " + e.getMessage()));
         }
     }
-    }
 }
