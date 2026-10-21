@@ -140,6 +140,6 @@ public final class CaptureService {
         if (carried == null || carried.getType().isAir()) {
             return MiscData.EMPTY;
         }
-        return new MiscData(true, ItemStack.serializeAsBytes(carried));
+        return new MiscData(true, carried.serializeAsBytes());
     }
 }
