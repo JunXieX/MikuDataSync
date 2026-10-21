@@ -6,6 +6,7 @@ import com.junxiex.mikudatasync.common.Frame;
 import com.junxiex.mikudatasync.common.FrameCodec;
 import com.junxiex.mikudatasync.common.HmacAuth;
 import com.junxiex.mikudatasync.common.IpcPayloads;
+import com.junxiex.mikudatasync.common.NackMessage;
 import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.ProtocolException;
@@ -19,6 +20,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -57,6 +59,8 @@ public final class IpcClient implements AutoCloseable {
     private volatile Socket socket;
     private volatile DataInputStream in;
     private volatile DataOutputStream out;
+    private volatile Consumer<Frame> frameHandler = frame -> {
+    };
 
     public IpcClient(MikuDataSyncPaper plugin, PaperConfig config) {
         this.logger = plugin.getLogger();
@@ -177,9 +181,9 @@ public final class IpcClient implements AutoCloseable {
         }
         if (frame.opcode() == Opcode.ERROR) {
             logger.warning("IPC error frame: " + readErrorMessage(frame.payload()));
-        } else {
-            logger.fine("Unhandled IPC frame: " + frame.opcode());
+            return;
         }
+        frameHandler.accept(frame);
     }
 
     private CompletableFuture<Frame> request(Opcode opcode, byte[] payload, long timeoutMs) {
@@ -210,6 +214,23 @@ public final class IpcClient implements AutoCloseable {
             }
             FrameCodec.write(current, frame);
         }
+    }
+
+    public void setFrameHandler(Consumer<Frame> handler) {
+        this.frameHandler = handler == null ? frame -> {
+        } : handler;
+    }
+
+    public void respond(long requestId, Opcode opcode, byte[] payload) {
+        try {
+            writeFrame(new Frame(opcode, requestId, payload));
+        } catch (IOException e) {
+            logger.warning("Failed to send IPC response: " + e.getMessage());
+        }
+    }
+
+    public void nack(NackMessage nack) {
+        respond(0L, Opcode.NACK, nack.encode());
     }
 
     private void ping() {

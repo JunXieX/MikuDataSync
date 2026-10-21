@@ -30,15 +30,16 @@ public final class MdsCommand implements SimpleCommand {
         switch (sub) {
             case "status" -> source.sendMessage(Component.text(
                     "MikuDataSync | protocol=" + Protocol.PROTOCOL_VERSION
-                            + " | snapshots=" + store.size()
+                            + " | online snapshots=" + store.size()
                             + " | ipc=" + (ipcServer.isRunning() ? "running" : "stopped")));
             case "stats" -> source.sendMessage(Component.text(
                     "snapshots=" + store.size()
-                            + " | maxSnapshotBytes=" + config.maxSnapshotBytes()
+                            + " | journal=" + store.journalStatus()
                             + " | fsync=" + config.fsyncMode()));
             case "doctor" -> source.sendMessage(Component.text(
                     "ok: config loaded | ipc=" + (ipcServer.isRunning() ? "up" : "down")
-                            + " | failMode=" + config.failMode()));
+                            + " | failMode=" + config.failMode()
+                            + " | journal=" + store.journalStatus()));
             case "reload" -> source.sendMessage(Component.text(
                     "reload currently requires a proxy restart (configuration reload lands in M5)"));
             default -> source.sendMessage(Component.text("Usage: /mds <status|stats|doctor|reload>"));

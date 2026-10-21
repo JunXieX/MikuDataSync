@@ -3,6 +3,7 @@ package com.junxiex.mikudatasync.velocity;
 import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 
+import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -10,8 +11,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Authoritative in-memory snapshot table. Journal persistence is added in milestone M3; the
- * semantics here (monotonic seq + content hash dedupe + appliedSeq) already match the protocol.
+ * Authoritative in-memory snapshot table backed by the append-only journal. A commit returns
+ * only after the journal write (and fsync for switch/quit) has completed.
  */
 public final class SnapshotStore {
 
@@ -29,30 +30,52 @@ public final class SnapshotStore {
 
     private final ConcurrentHashMap<UUID, Entry> entries = new ConcurrentHashMap<>();
     private final int maxSnapshotBytes;
+    private final JournalStore journal;
 
-    public SnapshotStore(int maxSnapshotBytes) {
+    public SnapshotStore(int maxSnapshotBytes, JournalStore journal) {
         this.maxSnapshotBytes = maxSnapshotBytes;
+        this.journal = journal;
     }
 
     public Entry get(UUID uuid) {
-        return entries.get(uuid);
+        Entry entry = entries.get(uuid);
+        if (entry != null) {
+            return entry;
+        }
+        if (journal == null) {
+            return null;
+        }
+        try {
+            SnapshotMessage message = journal.get(uuid);
+            if (message == null) {
+                return null;
+            }
+            return new Entry(message.seq(), message.captureSeq(), 0L, message.saveCause(),
+                    message.sourceServer(), message.envelope(), sha256Hex(message.envelope()), 0L);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
-    public long commit(UUID uuid, SnapshotMessage message) throws ProtocolException {
+    public synchronized long commit(UUID uuid, SnapshotMessage message) throws IOException, ProtocolException {
         if (message.envelope().length > maxSnapshotBytes) {
             throw new ProtocolException("snapshot exceeds configured limit: " + message.envelope().length);
         }
         String hash = sha256Hex(message.envelope());
-        Entry result = entries.compute(uuid, (id, previous) -> {
-            if (previous != null && previous.hash().equals(hash)) {
-                return previous;
-            }
-            long seq = previous == null ? 1L : previous.seq() + 1L;
-            long appliedSeq = previous == null ? 0L : previous.appliedSeq();
-            return new Entry(seq, message.captureSeq(), appliedSeq, message.saveCause(), message.sourceServer(),
-                    message.envelope(), hash, System.currentTimeMillis());
-        });
-        return result.seq();
+        Entry previous = entries.get(uuid);
+        if (previous != null && previous.hash().equals(hash)) {
+            return previous.seq();
+        }
+        long seq = previous == null ? 1L : previous.seq() + 1L;
+        long appliedSeq = previous == null ? 0L : previous.appliedSeq();
+        SnapshotMessage committed = new SnapshotMessage(seq, message.captureSeq(), message.saveCause(),
+                message.sourceServer(), message.envelope());
+        if (journal != null) {
+            journal.append(uuid, committed, true);
+        }
+        entries.put(uuid, new Entry(seq, message.captureSeq(), appliedSeq, message.saveCause(),
+                message.sourceServer(), message.envelope(), hash, System.currentTimeMillis()));
+        return seq;
     }
 
     public void ack(UUID uuid, long appliedSeq) {
@@ -68,8 +91,37 @@ public final class SnapshotStore {
         ));
     }
 
+    public void evict(UUID uuid) {
+        entries.remove(uuid);
+    }
+
     public int size() {
         return entries.size();
+    }
+
+    public String journalStatus() {
+        if (journal == null) {
+            return "disabled";
+        }
+        return "bytes=" + journal.size() + ", players=" + journal.trackedPlayers();
+    }
+
+    public void forceJournal() {
+        if (journal != null) {
+            journal.forceIfDirty();
+        }
+    }
+
+    public void maybeCompact() {
+        if (journal != null) {
+            journal.maybeCompact();
+        }
+    }
+
+    public void close() {
+        if (journal != null) {
+            journal.close();
+        }
     }
 
     private static String sha256Hex(byte[] data) {

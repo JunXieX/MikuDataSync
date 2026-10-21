@@ -12,6 +12,7 @@ import com.junxiex.mikudatasync.velocity.listener.ProxyListener;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 @Plugin(
         id = "mikudatasync",
@@ -22,6 +23,8 @@ import java.nio.file.Path;
         url = "https://github.com/JunXieX/MikuDataSync"
 )
 public final class MikuDataSyncVelocity {
+
+    private static final long COMPACTION_THRESHOLD_BYTES = 64L * 1024 * 1024;
 
     private final ProxyServer server;
     private final Logger logger;
@@ -42,14 +45,28 @@ public final class MikuDataSyncVelocity {
     public void onProxyInitialize(ProxyInitializeEvent event) {
         try {
             config = VelocityConfig.load(dataDirectory);
-            store = new SnapshotStore(config.maxSnapshotBytes());
+            JournalStore journal = new JournalStore(
+                    dataDirectory.resolve(config.journalFile()),
+                    config.fsyncMode(),
+                    config.fsyncIntervalMs(),
+                    COMPACTION_THRESHOLD_BYTES);
+            store = new SnapshotStore(config.maxSnapshotBytes(), journal);
             ipcServer = new IpcServer(logger, config, store);
             ipcServer.start();
 
-            server.getEventManager().register(this, new ProxyListener(logger, ipcServer));
+            server.getEventManager().register(this, new ProxyListener(logger, store, config));
+            server.getEventManager().register(this, new SwitchOrchestrator(logger, config, ipcServer));
+            server.getScheduler()
+                    .buildTask(this, () -> {
+                        store.forceJournal();
+                        store.maybeCompact();
+                    })
+                    .repeat(30L, TimeUnit.SECONDS)
+                    .schedule();
             var meta = server.getCommandManager().metaBuilder("mds").plugin(this).build();
             server.getCommandManager().register(meta, new MdsCommand(store, ipcServer, config));
-            logger.info("MikuDataSync enabled (protocol {})", com.junxiex.mikudatasync.common.Protocol.PROTOCOL_VERSION);
+            logger.info("MikuDataSync enabled (protocol {}, journal {})",
+                    com.junxiex.mikudatasync.common.Protocol.PROTOCOL_VERSION, store.journalStatus());
         } catch (Exception e) {
             logger.error("MikuDataSync failed to start; cross-server sync is disabled", e);
         }
@@ -59,6 +76,9 @@ public final class MikuDataSyncVelocity {
     public void onProxyShutdown(ProxyShutdownEvent event) {
         if (ipcServer != null) {
             ipcServer.close();
+        }
+        if (store != null) {
+            store.close();
         }
     }
 

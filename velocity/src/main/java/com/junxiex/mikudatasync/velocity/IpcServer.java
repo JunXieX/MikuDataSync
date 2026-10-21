@@ -6,6 +6,7 @@ import com.junxiex.mikudatasync.common.Frame;
 import com.junxiex.mikudatasync.common.FrameCodec;
 import com.junxiex.mikudatasync.common.HmacAuth;
 import com.junxiex.mikudatasync.common.IpcPayloads;
+import com.junxiex.mikudatasync.common.NackMessage;
 import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.ProtocolException;
@@ -24,14 +25,17 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Blocking-socket IPC server: one reader thread per backend connection, one accept thread.
- * Every payload is length-prefixed and every snapshot carries a CRC32C.
+ * Supports proxy-initiated requests (FLUSH_REQ -> PUT response) with per-request futures.
  */
 public final class IpcServer implements AutoCloseable {
 
@@ -42,6 +46,8 @@ public final class IpcServer implements AutoCloseable {
     private final SnapshotStore store;
     private final UUID nodeId = UUID.randomUUID();
     private final Map<String, Connection> connections = new ConcurrentHashMap<>();
+    private final Map<Long, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
+    private final AtomicLong requestIds = new AtomicLong();
     private final ExecutorService workers = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable, "mds-ipc-worker");
         thread.setDaemon(true);
@@ -70,6 +76,37 @@ public final class IpcServer implements AutoCloseable {
 
     public boolean isRunning() {
         return serverSocket != null && !serverSocket.isClosed();
+    }
+
+    public void send(String serverId, Opcode opcode, byte[] payload) {
+        Connection connection = connections.get(serverId);
+        if (connection == null) {
+            return;
+        }
+        try {
+            connection.send(opcode, 0L, payload);
+        } catch (IOException e) {
+            logger.warn("Failed to send {} to {}", opcode, serverId, e);
+        }
+    }
+
+    public CompletableFuture<Frame> request(String serverId, Opcode opcode, byte[] payload, long timeoutMs) {
+        Connection connection = connections.get(serverId);
+        if (connection == null) {
+            return CompletableFuture.failedFuture(new IOException("backend not connected: " + serverId));
+        }
+        long requestId = requestIds.incrementAndGet();
+        CompletableFuture<Frame> future = new CompletableFuture<>();
+        pendingRequests.put(requestId, new PendingRequest(serverId, future));
+        try {
+            connection.send(opcode, requestId, payload);
+        } catch (IOException e) {
+            pendingRequests.remove(requestId);
+            future.completeExceptionally(e);
+            return future;
+        }
+        return future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .whenComplete((frame, error) -> pendingRequests.remove(requestId));
     }
 
     private void acceptLoop() {
@@ -129,6 +166,7 @@ public final class IpcServer implements AutoCloseable {
             if (connection != null) {
                 connections.remove(connection.serverId(), connection);
                 connection.close();
+                failPendingForServer(connection.serverId());
                 logger.info("IPC backend disconnected: {}", connection.serverId());
             }
         }
@@ -174,8 +212,15 @@ public final class IpcServer implements AutoCloseable {
             case PUT -> {
                 UUID[] uuid = new UUID[1];
                 SnapshotMessage message = IpcPayloads.readPutRequest(frame.payload(), uuid);
-                long seq = store.commit(uuid[0], message);
-                connection.send(Opcode.PUT_OK, frame.requestId(), IpcPayloads.putOk(seq));
+                try {
+                    long seq = store.commit(uuid[0], message);
+                    connection.send(Opcode.PUT_OK, frame.requestId(), IpcPayloads.putOk(seq));
+                    completePending(frame.requestId(), frame);
+                } catch (IOException e) {
+                    connection.send(Opcode.NACK, frame.requestId(),
+                            new NackMessage(uuid[0], 0L, "commit_failed", String.valueOf(e.getMessage())).encode());
+                    failPending(frame.requestId(), e);
+                }
             }
             case ACK -> {
                 UUID[] uuid = new UUID[1];
@@ -183,13 +228,41 @@ public final class IpcServer implements AutoCloseable {
                 store.ack(uuid[0], appliedSeq);
             }
             case NACK -> {
-                UUID[] uuid = new UUID[1];
-                long appliedSeq = IpcPayloads.readAck(frame.payload(), uuid);
-                store.ack(uuid[0], appliedSeq);
-                logger.warn("Backend reported apply failure for {} at seq {}", uuid[0], appliedSeq);
+                NackMessage nack = NackMessage.decode(frame.payload());
+                logger.warn("Backend apply failure for {} at seq {}: {} - {}",
+                        nack.uuid(), nack.appliedSeq(), nack.code(), nack.message());
             }
+            case ERROR -> logger.warn("IPC error from {}: {}", connection.serverId(),
+                    new ByteReader(frame.payload()).readUtf(512));
             default -> connection.send(Opcode.ERROR, frame.requestId(),
                     errorPayload("unexpected opcode: " + frame.opcode()));
+        }
+    }
+
+    private void completePending(long requestId, Frame frame) {
+        if (requestId == 0L) {
+            return;
+        }
+        PendingRequest pending = pendingRequests.remove(requestId);
+        if (pending != null) {
+            pending.future().complete(frame);
+        }
+    }
+
+    private void failPending(long requestId, Throwable error) {
+        PendingRequest pending = pendingRequests.remove(requestId);
+        if (pending != null) {
+            pending.future().completeExceptionally(error);
+        }
+    }
+
+    private void failPendingForServer(String serverId) {
+        for (Long requestId : pendingRequests.keySet()) {
+            PendingRequest pending = pendingRequests.get(requestId);
+            if (pending != null && pending.serverId().equals(serverId)) {
+                pendingRequests.remove(requestId);
+                pending.future().completeExceptionally(new IOException("backend disconnected: " + serverId));
+            }
         }
     }
 
@@ -212,6 +285,9 @@ public final class IpcServer implements AutoCloseable {
         }
         connections.values().forEach(Connection::close);
         workers.shutdownNow();
+    }
+
+    private record PendingRequest(String serverId, CompletableFuture<Frame> future) {
     }
 
     private static final class Connection {

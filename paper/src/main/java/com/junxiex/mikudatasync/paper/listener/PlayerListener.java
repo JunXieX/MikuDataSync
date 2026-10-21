@@ -1,9 +1,11 @@
 package com.junxiex.mikudatasync.paper.listener;
 
+import com.junxiex.mikudatasync.common.NackMessage;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.paper.ApplyService;
 import com.junxiex.mikudatasync.paper.CaptureService;
+import com.junxiex.mikudatasync.paper.HandoffManager;
 import com.junxiex.mikudatasync.paper.IpcClient;
 import com.junxiex.mikudatasync.paper.MikuDataSyncPaper;
 import com.junxiex.mikudatasync.paper.NmsBridge;
@@ -33,16 +35,18 @@ public final class PlayerListener implements Listener {
     private final CaptureService captureService;
     private final ApplyService applyService;
     private final PendingSnapshots pendingSnapshots;
+    private final HandoffManager handoffManager;
 
     public PlayerListener(MikuDataSyncPaper plugin, PaperConfig config, IpcClient ipcClient,
                           CaptureService captureService, ApplyService applyService,
-                          PendingSnapshots pendingSnapshots) {
+                          PendingSnapshots pendingSnapshots, HandoffManager handoffManager) {
         this.plugin = plugin;
         this.config = config;
         this.ipcClient = ipcClient;
         this.captureService = captureService;
         this.applyService = applyService;
         this.pendingSnapshots = pendingSnapshots;
+        this.handoffManager = handoffManager;
     }
 
     @EventHandler(priority = EventPriority.LOWEST)
@@ -83,6 +87,8 @@ public final class PlayerListener implements Listener {
             ipcClient.ack(player.getUniqueId(), pending.seq());
         } catch (Exception e) {
             plugin.getLogger().severe("Failed to apply snapshot for " + player.getName() + ": " + e);
+            ipcClient.nack(new NackMessage(player.getUniqueId(), pending.seq(), "apply_failed",
+                    String.valueOf(e.getMessage())));
             player.kick(Component.text("跨服数据应用失败，请重新连接"));
         }
     }
@@ -90,9 +96,10 @@ public final class PlayerListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
         Player player = event.getPlayer();
-        SnapshotMessage message = captureService.capture(player, "quit");
         UUID uuid = player.getUniqueId();
         pendingSnapshots.remove(uuid);
+        handoffManager.clear(uuid);
+        SnapshotMessage message = captureService.capture(player, "quit");
         if (message == null) {
             return;
         }

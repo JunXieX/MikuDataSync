@@ -1,7 +1,10 @@
 package com.junxiex.mikudatasync.paper;
 
+import com.junxiex.mikudatasync.common.IpcPayloads;
+import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.paper.command.MdsCommand;
+import com.junxiex.mikudatasync.paper.listener.HandoffListener;
 import com.junxiex.mikudatasync.paper.listener.PlayerListener;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import org.bukkit.entity.Player;
@@ -16,6 +19,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
     private CaptureService captureService;
     private ApplyService applyService;
     private PendingSnapshots pendingSnapshots;
+    private HandoffManager handoffManager;
 
     @Override
     public void onEnable() {
@@ -30,13 +34,28 @@ public final class MikuDataSyncPaper extends JavaPlugin {
 
         NmsBridge.initialize(getLogger());
         ipcClient = new IpcClient(this, config);
-        ipcClient.start();
         captureService = new CaptureService(getLogger(), config);
         applyService = new ApplyService(config);
         pendingSnapshots = new PendingSnapshots();
+        handoffManager = new HandoffManager(this, ipcClient, captureService);
+
+        ipcClient.setFrameHandler(frame -> {
+            try {
+                switch (frame.opcode()) {
+                    case FLUSH_REQ -> handoffManager.handleFlush(IpcPayloads.parseUuid(frame.payload()), frame.requestId());
+                    case HANDOFF_ABORT -> handoffManager.clear(IpcPayloads.parseUuid(frame.payload()));
+                    default -> {
+                    }
+                }
+            } catch (Exception e) {
+                getLogger().warning("Failed to handle IPC frame " + frame.opcode() + ": " + e.getMessage());
+            }
+        });
+        ipcClient.start();
 
         getServer().getPluginManager().registerEvents(
-                new PlayerListener(this, config, ipcClient, captureService, applyService, pendingSnapshots), this);
+                new PlayerListener(this, config, ipcClient, captureService, applyService, pendingSnapshots, handoffManager), this);
+        getServer().getPluginManager().registerEvents(new HandoffListener(handoffManager), this);
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
                 event.registrar().register(
                         MdsCommand.node(ipcClient, config),
