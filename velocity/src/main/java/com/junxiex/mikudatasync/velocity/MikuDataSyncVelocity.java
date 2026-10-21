@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 @Plugin(
         id = "mikudatasync",
         name = "MikuDataSync",
-        version = "1.2.1",
+        version = "1.2.2",
         description = "Cross-server player data synchronization",
         authors = {"JunXieX"},
         url = "https://github.com/JunXieX/MikuDataSync"

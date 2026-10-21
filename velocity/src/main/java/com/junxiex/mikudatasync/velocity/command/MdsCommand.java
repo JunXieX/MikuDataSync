@@ -39,8 +39,7 @@ public final class MdsCommand implements SimpleCommand {
 
     @Override
     public boolean hasPermission(Invocation invocation) {
-        return invocation.source() instanceof com.velocitypowered.api.command.ConsoleCommandSource
-                || config.commandPermission().isEmpty()
+        return config.commandPermission().isEmpty()
                 || invocation.source().hasPermission(config.commandPermission());
     }
 
