@@ -77,9 +77,11 @@ public final class HandoffManager {
             }
             NmsBridge.setCarriedItem(player, null);
         }
-        try {
-            player.closeInventory();
-        } catch (Exception ignored) {
+        if (cursorSync) {
+            try {
+                player.closeInventory();
+            } catch (Exception ignored) {
+            }
         }
         SnapshotMessage message = captureService.capture(player, "switch", carried);
         // A successful gate does not guarantee the target connection succeeds; never leave the

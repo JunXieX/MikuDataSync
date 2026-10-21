@@ -136,7 +136,7 @@ public final class JournalStore implements AutoCloseable {
                 for (Map.Entry<UUID, Long> entry : latestOffsets.entrySet()) {
                     SnapshotMessage message = readAt(entry.getValue());
                     if (message == null) {
-                        continue;
+                        throw new IOException("journal compaction: unreadable record for " + entry.getKey());
                     }
                     byte[] payload = message.encode();
                     byte[] header = encodeHeader(message.seq(), entry.getKey(), payload);

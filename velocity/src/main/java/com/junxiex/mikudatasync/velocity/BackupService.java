@@ -20,7 +20,7 @@ import java.util.stream.Stream;
 /** Snapshot backup files, kept next to the journal and rotated by count. */
 public final class BackupService {
 
-    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
 
     private final Path directory;
     private final int keep;
