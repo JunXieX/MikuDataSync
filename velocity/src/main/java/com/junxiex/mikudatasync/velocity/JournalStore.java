@@ -36,7 +36,6 @@ public final class JournalStore implements AutoCloseable {
     private final Path path;
     private final VelocityConfig.FsyncMode fsyncMode;
     private final long compactionThresholdBytes;
-    private final Object compactionLock = new Object();
     private final Map<UUID, Long> latestOffsets = new ConcurrentHashMap<>();
     private final AtomicBoolean dirty = new AtomicBoolean();
     private final ScheduledExecutorService fsyncExecutor;
@@ -95,7 +94,7 @@ public final class JournalStore implements AutoCloseable {
         }
     }
 
-    public SnapshotMessage get(UUID uuid) throws IOException {
+    public synchronized SnapshotMessage get(UUID uuid) throws IOException {
         Long offset = latestOffsets.get(uuid);
         if (offset == null) {
             return null;
@@ -103,7 +102,7 @@ public final class JournalStore implements AutoCloseable {
         return readAt(offset);
     }
 
-    public long size() {
+    public synchronized long size() {
         return validLength;
     }
 
@@ -111,7 +110,7 @@ public final class JournalStore implements AutoCloseable {
         return latestOffsets.size();
     }
 
-    public void forceIfDirty() {
+    public synchronized void forceIfDirty() {
         if (!dirty.compareAndSet(true, false) || closed) {
             return;
         }
@@ -122,16 +121,11 @@ public final class JournalStore implements AutoCloseable {
         }
     }
 
-    public void maybeCompact() {
-        if (validLength < compactionThresholdBytes) {
+    public synchronized void maybeCompact() {
+        if (validLength < compactionThresholdBytes || closed) {
             return;
         }
-        synchronized (compactionLock) {
-            if (validLength < compactionThresholdBytes || closed) {
-                return;
-            }
-            compact();
-        }
+        compact();
     }
 
     private void compact() {

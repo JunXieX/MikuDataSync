@@ -11,6 +11,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 public final class MikuDataSyncPaper extends JavaPlugin {
 
@@ -58,7 +59,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new HandoffListener(handoffManager), this);
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
                 event.registrar().register(
-                        MdsCommand.node(ipcClient, config, captureService),
+                        MdsCommand.node(this, ipcClient, config, captureService),
                         "MikuDataSync administration",
                         java.util.List.of()
                 ));
@@ -96,9 +97,22 @@ public final class MikuDataSyncPaper extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (ipcClient != null) {
-            ipcClient.close();
+        if (ipcClient == null) {
+            return;
         }
+        if (captureService != null) {
+            for (Player player : getServer().getOnlinePlayers()) {
+                try {
+                    SnapshotMessage message = captureService.capture(player, "shutdown");
+                    if (message != null) {
+                        ipcClient.putSnapshot(player.getUniqueId(), message, 2000L).get(2, TimeUnit.SECONDS);
+                    }
+                } catch (Exception e) {
+                    getLogger().warning("Failed to flush shutdown snapshot: " + e.getMessage());
+                }
+            }
+        }
+        ipcClient.close();
     }
 
     public PaperConfig config() {
