@@ -77,7 +77,7 @@ class SnapshotStoreTest {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
         try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
-            SnapshotStore store = new SnapshotStore(32, journal);
+            SnapshotStore store = new SnapshotStore(8, journal);
             assertThrows(ProtocolException.class, () -> store.commit(uuid, message(1, "quit", (byte) 1)));
         }
     }
