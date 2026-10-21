@@ -3,6 +3,8 @@ package com.junxiex.mikudatasync.velocity.command;
 import com.junxiex.mikudatasync.common.IpcPayloads;
 import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.Opcode;
+import com.junxiex.mikudatasync.common.Protocol;
+import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.velocity.BackupService;
@@ -167,6 +169,10 @@ public final class MdsCommand implements SimpleCommand {
         }
         try {
             SnapshotMessage message = backups.read(arguments[2]);
+            SnapshotEnvelope parsed = SnapshotEnvelope.decode(message.envelope());
+            if (parsed.schemaVersion() > Protocol.SCHEMA_VERSION) {
+                throw new IllegalStateException("backup schema is newer than this build");
+            }
             var target = player.get();
             long seq = store.commit(target.getUniqueId(), message);
             target.getCurrentServer().ifPresent(connection ->

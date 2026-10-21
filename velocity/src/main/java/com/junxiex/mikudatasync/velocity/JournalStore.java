@@ -151,7 +151,11 @@ public final class JournalStore implements AutoCloseable {
                 out.force(true);
             }
             channel.close();
-            Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            try {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING);
+            }
             channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
             replay();
         } catch (IOException e) {
@@ -271,7 +275,7 @@ public final class JournalStore implements AutoCloseable {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         closed = true;
         fsyncExecutor.shutdownNow();
         try {

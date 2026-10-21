@@ -5,7 +5,9 @@ import com.junxiex.mikudatasync.common.SnapshotMessage;
 import org.slf4j.Logger;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -35,6 +37,9 @@ public final class BackupService {
         String safeName = playerName.replaceAll("[^A-Za-z0-9_.-]", "_");
         Path file = directory.resolve(safeName + "-" + uuid + "-" + LocalDateTime.now().format(STAMP) + ".mds");
         Files.write(file, message.encode());
+        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
+            channel.force(true);
+        }
         rotate();
         return file;
     }

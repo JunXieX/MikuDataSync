@@ -39,6 +39,7 @@ public final class PlayerListener implements Listener {
     private final ApplyService applyService;
     private final PendingSnapshots pendingSnapshots;
     private final HandoffManager handoffManager;
+    private final java.util.Set<UUID> skipQuitCapture = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public PlayerListener(MikuDataSyncPaper plugin, PaperConfig config, IpcClient ipcClient,
                           CaptureService captureService, ApplyService applyService,
@@ -83,7 +84,7 @@ public final class PlayerListener implements Listener {
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         PendingSnapshots.Pending pending = pendingSnapshots.remove(player.getUniqueId());
-        if (pending == null) {
+        if (pending == null || pending.prepared() == null) {
             return;
         }
         try {
@@ -101,6 +102,7 @@ public final class PlayerListener implements Listener {
             while (cause.getCause() != null && cause instanceof java.lang.reflect.InvocationTargetException) {
                 cause = cause.getCause();
             }
+            skipQuitCapture.add(player.getUniqueId());
             plugin.getLogger().log(java.util.logging.Level.SEVERE,
                     "Failed to apply snapshot for " + player.getName(), cause);
             ipcClient.nack(new NackMessage(player.getUniqueId(), pending.seq(), "apply_failed",
@@ -113,6 +115,12 @@ public final class PlayerListener implements Listener {
     public void onQuit(PlayerQuitEvent event) {
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
+        if (skipQuitCapture.remove(uuid)) {
+            pendingSnapshots.remove(uuid);
+            captureService.forget(uuid);
+            handoffManager.clear(uuid);
+            return;
+        }
         pendingSnapshots.remove(uuid);
         captureService.forget(uuid);
         if (handoffManager.isHandingOff(uuid)) {

@@ -22,6 +22,7 @@ public final class HandoffManager {
     private final IpcClient ipcClient;
     private final CaptureService captureService;
     private final Set<UUID> handoff = ConcurrentHashMap.newKeySet();
+    private final java.util.Map<UUID, ItemStack> carriedItems = new ConcurrentHashMap<>();
 
     public HandoffManager(MikuDataSyncPaper plugin, IpcClient ipcClient, CaptureService captureService) {
         this.plugin = plugin;
@@ -35,6 +36,20 @@ public final class HandoffManager {
 
     public void clear(UUID uuid) {
         handoff.remove(uuid);
+        carriedItems.remove(uuid);
+    }
+
+    /** Restores the cursor item if the switch was aborted and the player is still on this server. */
+    public void abort(UUID uuid) {
+        handoff.remove(uuid);
+        ItemStack carried = carriedItems.remove(uuid);
+        if (carried == null) {
+            return;
+        }
+        Player player = plugin.getServer().getPlayer(uuid);
+        if (player != null && player.isOnline()) {
+            NmsBridge.setCarriedItem(player, carried);
+        }
     }
 
     public void handleFlush(UUID uuid, long requestId) {
@@ -52,9 +67,16 @@ public final class HandoffManager {
         UUID uuid = player.getUniqueId();
         handoff.add(uuid);
         // Take the cursor item out of the menu first so closing the inventory cannot drop or
-        // move it; it is transferred as part of the snapshot instead.
-        ItemStack carried = NmsBridge.getCarriedItem(player);
-        NmsBridge.setCarriedItem(player, null);
+        // move it; it is transferred as part of the snapshot instead. If cursor sync is disabled
+        // the item must stay in the menu, otherwise it would be lost.
+        boolean cursorSync = captureService.capturesCursor();
+        ItemStack carried = cursorSync ? NmsBridge.getCarriedItem(player) : null;
+        if (cursorSync) {
+            if (carried != null) {
+                carriedItems.put(uuid, carried);
+            }
+            NmsBridge.setCarriedItem(player, null);
+        }
         try {
             player.closeInventory();
         } catch (Exception ignored) {
@@ -62,9 +84,17 @@ public final class HandoffManager {
         SnapshotMessage message = captureService.capture(player, "switch", carried);
         // A successful gate does not guarantee the target connection succeeds; never leave the
         // player frozen on the source server forever.
-        PluginSchedulers.runDelayed(plugin, player, () -> handoff.remove(uuid), 200L);
+        // Never auto-restore the cursor here: the snapshot already contains it and restoring on a
+        // slow-but-successful switch would duplicate the item. Explicit HANDOFF_ABORT restores it.
+        PluginSchedulers.runDelayed(plugin, player, () -> {
+            handoff.remove(uuid);
+            carriedItems.remove(uuid);
+        }, 200L);
         if (message == null) {
-            NmsBridge.setCarriedItem(player, carried);
+            if (cursorSync) {
+                carriedItems.remove(uuid);
+                NmsBridge.setCarriedItem(player, carried);
+            }
             ipcClient.respond(requestId, Opcode.ERROR, error("capture failed"));
             return;
         }

@@ -136,7 +136,7 @@ public final class IpcClient implements AutoCloseable {
         Socket newSocket = new Socket();
         newSocket.connect(new InetSocketAddress(config.proxyHost(), config.proxyPort()), config.connectTimeoutMs());
         newSocket.setTcpNoDelay(true);
-        newSocket.setSoTimeout(0);
+        newSocket.setSoTimeout(10_000);
 
         DataInputStream newIn = new DataInputStream(new BufferedInputStream(newSocket.getInputStream()));
         DataOutputStream newOut = new DataOutputStream(new BufferedOutputStream(newSocket.getOutputStream()));
@@ -149,6 +149,7 @@ public final class IpcClient implements AutoCloseable {
         if (ack.opcode() != Opcode.HELLO_ACK) {
             throw new IOException("unexpected handshake response: " + ack.opcode());
         }
+        newSocket.setSoTimeout(0);
         state.set(State.CONNECTED);
         logger.info("Connected to proxy IPC at " + config.proxyHost() + ":" + config.proxyPort());
 
@@ -248,7 +249,9 @@ public final class IpcClient implements AutoCloseable {
         }
         request(Opcode.PING, new byte[0], 5000L).whenComplete((frame, error) -> {
             if (error != null) {
-                logger.fine("IPC ping failed: " + error.getMessage());
+                logger.warning("IPC ping failed, reconnecting: " + error.getMessage());
+                state.set(State.DISCONNECTED);
+                closeSocket();
             }
         });
     }

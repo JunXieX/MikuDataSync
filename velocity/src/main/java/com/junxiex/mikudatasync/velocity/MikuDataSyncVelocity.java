@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 @Plugin(
         id = "mikudatasync",
         name = "MikuDataSync",
-        version = "1.3.8",
+        version = "1.3.9",
         description = "Cross-server player data synchronization",
         authors = {"JunXieX"},
         url = "https://github.com/JunXieX/MikuDataSync"
@@ -57,7 +57,7 @@ public final class MikuDataSyncVelocity {
             ipcServer = new IpcServer(logger, config, store, knownServers);
             ipcServer.start();
 
-            server.getEventManager().register(this, new ProxyListener(logger, store, config));
+            server.getEventManager().register(this, new ProxyListener(server, logger, store, config));
             server.getEventManager().register(this, new SwitchOrchestrator(logger, config, ipcServer));
             server.getScheduler()
                     .buildTask(this, () -> {

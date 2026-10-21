@@ -107,28 +107,30 @@ public final class IpcServer implements AutoCloseable {
         long requestId = requestIds.incrementAndGet();
         CompletableFuture<Frame> future = new CompletableFuture<>();
         pendingRequests.put(requestId, new PendingRequest(serverId, future));
+        CompletableFuture<Void> flush = null;
+        if (opcode == Opcode.FLUSH_REQ) {
+            try {
+                UUID uuid = IpcPayloads.parseUuid(payload);
+                flush = new CompletableFuture<>();
+                CompletableFuture<Void> registered = flush;
+                pendingFlushes.put(uuid, registered);
+                future.whenComplete((frame, error) -> {
+                    pendingFlushes.remove(uuid, registered);
+                    if (error != null) {
+                        registered.completeExceptionally(error);
+                    } else {
+                        registered.complete(null);
+                    }
+                });
+            } catch (ProtocolException ignored) {
+            }
+        }
         try {
             connection.send(opcode, requestId, payload);
         } catch (IOException e) {
             pendingRequests.remove(requestId);
             future.completeExceptionally(e);
             return future;
-        }
-        if (opcode == Opcode.FLUSH_REQ) {
-            try {
-                UUID uuid = IpcPayloads.parseUuid(payload);
-                CompletableFuture<Void> flush = new CompletableFuture<>();
-                pendingFlushes.put(uuid, flush);
-                future.whenComplete((frame, error) -> {
-                    pendingFlushes.remove(uuid, flush);
-                    if (error != null) {
-                        flush.completeExceptionally(error);
-                    } else {
-                        flush.complete(null);
-                    }
-                });
-            } catch (ProtocolException ignored) {
-            }
         }
         return future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .whenComplete((frame, error) -> pendingRequests.remove(requestId));
@@ -253,15 +255,7 @@ public final class IpcServer implements AutoCloseable {
                     long seq = store.commit(uuid[0], message);
                     connection.send(Opcode.PUT_OK, frame.requestId(), IpcPayloads.putOk(seq));
                     completePending(frame.requestId(), frame);
-                    if (!config.retainOffline()
-                            && ("quit".equalsIgnoreCase(message.saveCause())
-                            || "shutdown".equalsIgnoreCase(message.saveCause()))) {
-                        // The backend's quit PUT can arrive after DisconnectEvent evicted the entry;
-                        // drop it again once it is durable so offline snapshots do not pin memory.
-                        CompletableFuture.delayedExecutor(5, TimeUnit.SECONDS)
-                                .execute(() -> store.evict(uuid[0]));
-                    }
-                } catch (IOException e) {
+                } catch (IOException | ProtocolException e) {
                     connection.send(Opcode.NACK, frame.requestId(),
                             new NackMessage(uuid[0], 0L, "commit_failed", String.valueOf(e.getMessage())).encode());
                     failPending(frame.requestId(), e);

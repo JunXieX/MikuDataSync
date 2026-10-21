@@ -391,7 +391,7 @@ public final class NmsBridge {
 
     public static byte[] captureStatistics(Player player) {
         if (!dataAvailable) {
-            return StatisticsList.encode(List.of());
+            return null;
         }
         try {
             Object handle = craftGetHandle.invoke(player);
@@ -430,7 +430,7 @@ public final class NmsBridge {
             return StatisticsList.encode(entries);
         } catch (Throwable t) {
             logger.warning("Failed to capture statistics: " + t);
-            return StatisticsList.encode(List.of());
+            return null;
         }
     }
 
@@ -492,7 +492,7 @@ public final class NmsBridge {
 
     public static byte[] captureAdvancements(Player player) {
         if (!dataAvailable) {
-            return AdvancementList.encode(List.of());
+            return null;
         }
         try {
             Object handle = craftGetHandle.invoke(player);
@@ -524,7 +524,7 @@ public final class NmsBridge {
             return AdvancementList.encode(entries);
         } catch (Throwable t) {
             logger.warning("Failed to capture advancements: " + t);
-            return AdvancementList.encode(List.of());
+            return null;
         }
     }
 

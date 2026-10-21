@@ -57,13 +57,13 @@ public record VelocityConfig(
 
         String journalFile = MiniYaml.getString(root, "store.journal-file", "data/journal.mds");
         String fsyncModeRaw = MiniYaml.getString(root, "store.fsync-mode", "interval");
-        int fsyncIntervalMs = MiniYaml.getInt(root, "store.fsync-interval-ms", 50);
+        int fsyncIntervalMs = Math.max(10, Math.min(10_000, MiniYaml.getInt(root, "store.fsync-interval-ms", 50)));
         boolean retainOffline = MiniYaml.getBoolean(root, "store.retain-offline-snapshots", false);
 
         int switchTimeoutMs = MiniYaml.getInt(root, "sync.switch-timeout-ms", 1500);
         int getWaitMs = MiniYaml.getInt(root, "sync.get-wait-ms", 300);
         String failMode = MiniYaml.getString(root, "sync.fail-mode", "closed");
-        int periodicFlushSeconds = MiniYaml.getInt(root, "sync.periodic-flush-seconds", 30);
+        int periodicFlushSeconds = Math.max(1, Math.min(3_600, MiniYaml.getInt(root, "sync.periodic-flush-seconds", 30)));
         int maxSnapshotBytes = MiniYaml.getInt(root, "sync.max-snapshot-bytes", Protocol.MAX_SNAPSHOT_BYTES);
         int backupsKeep = Math.max(1, Math.min(1000, MiniYaml.getInt(root, "backups.keep", 20)));
         String commandPermission = MiniYaml.getString(root, "commands.permission", "");
@@ -113,6 +113,7 @@ public record VelocityConfig(
     }
 
     public boolean failClosed() {
-        return "closed".equals(failMode);
+        // "kick" was accepted historically and must behave like fail-closed, never fail-open.
+        return !"open".equals(failMode);
     }
 }

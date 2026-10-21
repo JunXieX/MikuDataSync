@@ -29,7 +29,7 @@ public record PaperConfig(
         int port = cfg.getInt("proxy.port", 25666);
         String serverId = cfg.getString("proxy.server-id", "");
         String secret = cfg.getString("proxy.secret", "");
-        int connectTimeoutMs = cfg.getInt("proxy.connect-timeout-ms", 3000);
+        int connectTimeoutMs = Math.max(100, Math.min(30_000, cfg.getInt("proxy.connect-timeout-ms", 3000)));
 
         if (serverId.isBlank()) {
             throw new ConfigException("proxy.server-id must not be empty");

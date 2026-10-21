@@ -46,7 +46,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
             try {
                 switch (frame.opcode()) {
                     case FLUSH_REQ -> handoffManager.handleFlush(IpcPayloads.parseUuid(frame.payload()), frame.requestId());
-                    case HANDOFF_ABORT -> handoffManager.clear(IpcPayloads.parseUuid(frame.payload()));
+                    case HANDOFF_ABORT -> handoffManager.abort(IpcPayloads.parseUuid(frame.payload()));
                     case RESTORE_APPLY -> restoreHandler.handle(frame.payload());
                     default -> {
                     }

@@ -47,6 +47,10 @@ public final class CaptureService {
         this.serverId = config.serverId();
     }
 
+    public boolean capturesCursor() {
+        return config.enabled(Segment.MISC);
+    }
+
     public SnapshotMessage capture(Player player, String cause) {
         return capture(player, cause, null);
     }
@@ -75,10 +79,16 @@ public final class CaptureService {
                 segments.put(Segment.PDC, timed("capture.pdc", () -> player.getPersistentDataContainer().serializeToBytes()));
             }
             if (config.enabled(Segment.ADVANCEMENTS) && NmsBridge.dataBridgeAvailable()) {
-                segments.put(Segment.ADVANCEMENTS, timed("capture.advancements", () -> NmsBridge.captureAdvancements(player)));
+                byte[] advancements = timed("capture.advancements", () -> NmsBridge.captureAdvancements(player));
+                if (advancements != null) {
+                    segments.put(Segment.ADVANCEMENTS, advancements);
+                }
             }
             if (config.enabled(Segment.STATISTICS) && NmsBridge.dataBridgeAvailable()) {
-                segments.put(Segment.STATISTICS, timed("capture.statistics", () -> NmsBridge.captureStatistics(player)));
+                byte[] statistics = timed("capture.statistics", () -> NmsBridge.captureStatistics(player));
+                if (statistics != null) {
+                    segments.put(Segment.STATISTICS, statistics);
+                }
             }
             if (config.enabled(Segment.MAPS) && NmsBridge.mapBridgeAvailable()) {
                 byte[] maps = NmsBridge.captureMaps(player);
