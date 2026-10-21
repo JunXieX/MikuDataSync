@@ -87,9 +87,14 @@ public final class PlayerListener implements Listener {
             applyService.apply(player, pending.envelope());
             ipcClient.ack(player.getUniqueId(), pending.seq());
         } catch (Exception e) {
-            plugin.getLogger().severe("Failed to apply snapshot for " + player.getName() + ": " + e);
+            Throwable cause = e;
+            while (cause.getCause() != null && cause instanceof java.lang.reflect.InvocationTargetException) {
+                cause = cause.getCause();
+            }
+            plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                    "Failed to apply snapshot for " + player.getName(), cause);
             ipcClient.nack(new NackMessage(player.getUniqueId(), pending.seq(), "apply_failed",
-                    String.valueOf(e.getMessage())));
+                    String.valueOf(cause.getMessage())));
             player.kick(Component.text("跨服数据应用失败，请重新连接"));
         }
     }
