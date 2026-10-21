@@ -85,6 +85,13 @@ public final class PlayerListener implements Listener {
         }
         try {
             applyService.apply(player, pending.envelope());
+            PluginSchedulers.runDelayed(plugin, player, () -> {
+                try {
+                    applyService.applyCursor(player, pending.envelope());
+                } catch (Exception e) {
+                    plugin.getLogger().warning("Failed to restore cursor item: " + e.getMessage());
+                }
+            }, 1L);
             ipcClient.ack(player.getUniqueId(), pending.seq());
         } catch (Exception e) {
             Throwable cause = e;

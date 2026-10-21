@@ -131,9 +131,6 @@ public final class ApplyService {
                 player.getPersistentDataContainer().readFromBytes(pdc, true);
             }
         }
-        if (misc != null && misc.hasCursorItem()) {
-            NmsBridge.setCarriedItem(player, ItemStack.deserializeBytes(misc.cursorItem()));
-        }
         if (advancements != null) {
             NmsBridge.applyAdvancements(player, advancements, config.advancementStrict());
         }
@@ -142,6 +139,24 @@ public final class ApplyService {
         }
         player.updateInventory();
         Metrics.recordApply(System.nanoTime() - start);
+    }
+
+    /**
+     * Cursor slot is restored one tick after join: Paper's join sequence resets the menu carried
+     * slot after PlayerJoinEvent, so setting it during the event is lost.
+     */
+    public void applyCursor(Player player, SnapshotEnvelope envelope) {
+        if (!envelope.hasSegment(Segment.MISC)) {
+            return;
+        }
+        try {
+            MiscData misc = MiscData.decode(envelope.segment(Segment.MISC));
+            if (misc.hasCursorItem()) {
+                NmsBridge.setCarriedItem(player, ItemStack.deserializeBytes(misc.cursorItem()));
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to restore cursor item", e);
+        }
     }
 
     private static float clamp(float speed) {
