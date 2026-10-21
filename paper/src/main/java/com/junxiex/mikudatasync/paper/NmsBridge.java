@@ -51,6 +51,7 @@ public final class NmsBridge {
     private static Method identifierParse;
     private static Class<?> identifierClass;
     private static Object statTypeRegistry;
+    private static Object customStatRegistry;
     private static Object statsCustomType;
     private static final Map<Object, Object> statTypeRegistries = new HashMap<>();
 
@@ -201,7 +202,9 @@ public final class NmsBridge {
             }
             Object value;
             if (statType == statsCustomType) {
-                value = identifier(entry.valueKey());
+                // Custom stat values are Identifier instances registered in CUSTOM_STAT; use the
+                // canonical instance, otherwise Registry#getKey returns null and Stat construction NPEs.
+                value = registryGetValue.invoke(customStatRegistry, identifier(entry.valueKey()));
             } else {
                 Object registry = statTypeRegistries.get(statType);
                 if (registry == null || entry.valueKey() == null) {
@@ -348,6 +351,7 @@ public final class NmsBridge {
             identifierParse = resolveIdentifierParse();
 
             statTypeRegistry = staticField(builtInRegistries, "STAT_TYPE");
+            customStatRegistry = staticField(builtInRegistries, "CUSTOM_STAT");
             statsCustomType = staticField(statsClass, "CUSTOM");
             addStatType(statsClass, builtInRegistries, "ITEM_USED", "ITEM");
             addStatType(statsClass, builtInRegistries, "ITEM_BROKEN", "ITEM");
