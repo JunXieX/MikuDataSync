@@ -29,6 +29,7 @@ public final class SnapshotStore {
     }
 
     private final ConcurrentHashMap<UUID, Entry> entries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, Long> restoredAt = new ConcurrentHashMap<>();
     private final int maxSnapshotBytes;
     private final JournalStore journal;
 
@@ -57,7 +58,18 @@ public final class SnapshotStore {
         }
     }
 
+    public void markRestored(UUID uuid) {
+        restoredAt.put(uuid, System.currentTimeMillis());
+    }
+
     public synchronized long commit(UUID uuid, SnapshotMessage message) throws IOException, ProtocolException {
+        Long restored = restoredAt.get(uuid);
+        if (restored != null && System.currentTimeMillis() - restored < 15_000L
+                && ("quit".equalsIgnoreCase(message.saveCause())
+                || "shutdown".equalsIgnoreCase(message.saveCause()))) {
+            Entry existing = entries.get(uuid);
+            return existing == null ? 0L : existing.seq();
+        }
         if (message.envelope().length > maxSnapshotBytes) {
             throw new ProtocolException("snapshot exceeds configured limit: " + message.envelope().length);
         }

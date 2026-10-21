@@ -174,6 +174,7 @@ public final class MdsCommand implements SimpleCommand {
         try {
             SnapshotMessage message = backups.read(fileName);
             long seq = store.commit(uuid, message);
+            store.markRestored(uuid);
             source.sendMessage(Component.text("Restored offline player " + uuid + " at seq " + seq
                     + " (applies on next join)"));
         } catch (Exception e) {
