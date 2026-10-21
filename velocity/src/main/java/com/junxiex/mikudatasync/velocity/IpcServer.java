@@ -47,6 +47,7 @@ public final class IpcServer implements AutoCloseable {
     private final UUID nodeId = UUID.randomUUID();
     private final Map<String, Connection> connections = new ConcurrentHashMap<>();
     private final Map<Long, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
+    private final Map<UUID, CompletableFuture<Void>> pendingFlushes = new ConcurrentHashMap<>();
     private final AtomicLong requestIds = new AtomicLong();
     private final ExecutorService workers = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable, "mds-ipc-worker");
@@ -104,6 +105,22 @@ public final class IpcServer implements AutoCloseable {
             pendingRequests.remove(requestId);
             future.completeExceptionally(e);
             return future;
+        }
+        if (opcode == Opcode.FLUSH_REQ) {
+            try {
+                UUID uuid = IpcPayloads.parseUuid(payload);
+                CompletableFuture<Void> flush = new CompletableFuture<>();
+                pendingFlushes.put(uuid, flush);
+                future.whenComplete((frame, error) -> {
+                    pendingFlushes.remove(uuid, flush);
+                    if (error != null) {
+                        flush.completeExceptionally(error);
+                    } else {
+                        flush.complete(null);
+                    }
+                });
+            } catch (ProtocolException ignored) {
+            }
         }
         return future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .whenComplete((frame, error) -> pendingRequests.remove(requestId));
@@ -202,12 +219,20 @@ public final class IpcServer implements AutoCloseable {
                     new ByteWriter(8).writeLong(System.currentTimeMillis()).toByteArray());
             case GET -> {
                 UUID uuid = IpcPayloads.parseUuid(frame.payload());
-                SnapshotStore.Entry entry = store.get(uuid);
-                byte[] response = entry == null
-                        ? IpcPayloads.snapshotMissing()
-                        : IpcPayloads.snapshotFound(new SnapshotMessage(entry.seq(), entry.captureSeq(),
-                        entry.saveCause(), entry.sourceServer(), entry.envelope()));
-                connection.send(Opcode.SNAPSHOT, frame.requestId(), response);
+                CompletableFuture<Void> flush = pendingFlushes.get(uuid);
+                if (flush == null) {
+                    sendSnapshot(connection, frame.requestId(), uuid);
+                } else {
+                    long requestId = frame.requestId();
+                    flush.orTimeout(config.getWaitMs(), TimeUnit.MILLISECONDS)
+                            .whenComplete((ignored, error) -> {
+                                try {
+                                    sendSnapshot(connection, requestId, uuid);
+                                } catch (IOException e) {
+                                    logger.warn("Failed to send delayed snapshot response", e);
+                                }
+                            });
+                }
             }
             case PUT -> {
                 UUID[] uuid = new UUID[1];
@@ -232,11 +257,23 @@ public final class IpcServer implements AutoCloseable {
                 logger.warn("Backend apply failure for {} at seq {}: {} - {}",
                         nack.uuid(), nack.appliedSeq(), nack.code(), nack.message());
             }
-            case ERROR -> logger.warn("IPC error from {}: {}", connection.serverId(),
-                    new ByteReader(frame.payload()).readUtf(512));
+            case ERROR -> {
+                String message = new ByteReader(frame.payload()).readUtf(512);
+                logger.warn("IPC error from {}: {}", connection.serverId(), message);
+                failPending(frame.requestId(), new IOException("backend error: " + message));
+            }
             default -> connection.send(Opcode.ERROR, frame.requestId(),
                     errorPayload("unexpected opcode: " + frame.opcode()));
         }
+    }
+
+    private void sendSnapshot(Connection connection, long requestId, UUID uuid) throws IOException {
+        SnapshotStore.Entry entry = store.get(uuid);
+        byte[] response = entry == null
+                ? IpcPayloads.snapshotMissing()
+                : IpcPayloads.snapshotFound(new SnapshotMessage(entry.seq(), entry.captureSeq(),
+                entry.saveCause(), entry.sourceServer(), entry.envelope()));
+        connection.send(Opcode.SNAPSHOT, requestId, response);
     }
 
     private void completePending(long requestId, Frame frame) {
