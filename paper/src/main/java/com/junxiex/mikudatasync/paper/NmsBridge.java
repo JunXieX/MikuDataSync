@@ -456,7 +456,12 @@ public final class NmsBridge {
         if (!mapsAvailable || player == null || payload == null) {
             return;
         }
-        List<MapDataList.Entry> fallback = MapDataList.decode(payload);
+        List<MapDataList.Entry> fallback;
+        try {
+            fallback = MapDataList.decode(payload);
+        } catch (ProtocolException e) {
+            return;
+        }
         java.util.Map<Integer, MapDataList.Entry> byId = new HashMap<>();
         for (MapDataList.Entry entry : fallback) {
             byId.put(entry.mapId(), entry);
