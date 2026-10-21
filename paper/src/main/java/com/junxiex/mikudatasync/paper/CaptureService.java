@@ -115,7 +115,12 @@ public final class CaptureService {
         }
     }
 
-    private static byte[] timed(String stage, java.util.function.Supplier<byte[]> supplier) {
+    @FunctionalInterface
+    private interface BytesSupplier {
+        byte[] get() throws Exception;
+    }
+
+    private static byte[] timed(String stage, BytesSupplier supplier) throws Exception {
         long start = System.nanoTime();
         try {
             return supplier.get();
