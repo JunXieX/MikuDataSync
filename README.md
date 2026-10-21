@@ -63,6 +63,7 @@
 | `/mdsbackend status` | 后端：查看本服 IPC 状态 | `mikudatasync.admin` |
 | `/mdsbackend bench` | 后端：运行一次 codec 微基准（p50/p95） | `mikudatasync.admin` |
 | `/mdsbackend selftest` | 后端：检查 NMS 桥状态并可对执行者做一次采集测试 | `mikudatasync.admin` |
+| `/mdsbackend debug ...` | 后端：调试用（需 `debug.enabled: true`）：读写玩家 PDC 与手持物品 PDC/名称 | `mikudatasync.admin` |
 
 ## 同步范围
 

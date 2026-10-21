@@ -54,6 +54,7 @@ public final class MdsCommand {
                     }
                     return Command.SINGLE_SUCCESS;
                 }))
+                .then(DebugCommand.node(plugin, config))
                 .build();
     }
 }

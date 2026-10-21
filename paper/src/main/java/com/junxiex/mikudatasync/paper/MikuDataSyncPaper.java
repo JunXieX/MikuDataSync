@@ -63,6 +63,9 @@ public final class MikuDataSyncPaper extends JavaPlugin {
                         "MikuDataSync administration",
                         java.util.List.of()
                 ));
+        if (config.debugEnabled()) {
+            getLogger().warning("Debug commands are ENABLED; disable debug.enabled in production");
+        }
         startPeriodicSnapshots();
         getLogger().info("MikuDataSync backend enabled for server " + config.serverId()
                 + " (" + (PluginSchedulers.isFolia() ? "Folia" : "Paper") + ")");

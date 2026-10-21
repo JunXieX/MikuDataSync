@@ -22,7 +22,8 @@ public record PaperConfig(
         int periodicSnapshotSeconds,
         int preloginFetchTimeoutMs,
         String onSyncUnavailable,
-        boolean logTimings
+        boolean logTimings,
+        boolean debugEnabled
 ) {
 
     public static PaperConfig load(FileConfiguration cfg) throws ConfigException {
@@ -101,7 +102,8 @@ public record PaperConfig(
                 Math.max(5, cfg.getInt("sync.periodic-snapshot-seconds", 30)),
                 Math.max(50, cfg.getInt("sync.prelogin-fetch-timeout-ms", 500)),
                 onSyncUnavailable,
-                cfg.getBoolean("debug.log-timings", false)
+                cfg.getBoolean("debug.log-timings", false),
+                cfg.getBoolean("debug.enabled", false)
         );
     }
 

@@ -32,4 +32,5 @@ sync:
   on-sync-unavailable: "kick"
 
 debug:
+  enabled: false
   log-timings: false
