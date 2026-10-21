@@ -198,8 +198,6 @@ public final class NmsBridge {
         if (maps.isEmpty()) {
             return null;
         }
-        MapDataList.Entry first = maps.values().iterator().next();
-        logger.info("MDS map capture: " + maps.size() + " maps, first id=" + first.mapId() + " checksum=" + checksum(first.colors()));
         List<MapDataList.Entry> entries = new ArrayList<>(maps.values());
         if (entries.size() > MapDataList.MAX_MAPS) {
             entries = entries.subList(0, MapDataList.MAX_MAPS);
@@ -264,17 +262,9 @@ public final class NmsBridge {
 
     public static Map<Integer, Integer> createMaps(org.bukkit.World world, List<MapDataList.Entry> entries) throws Exception {
         Map<Integer, Integer> mapped = new HashMap<>();
-        StringBuilder existing = new StringBuilder();
-        for (int i = 0; i < 8; i++) {
-            MapView v = Bukkit.getMap(i);
-            existing.append(i).append('=').append(v == null ? "null" : "obj").append(' ');
-        }
-        logger.info("MDS map registry before create: " + existing);
         for (MapDataList.Entry entry : entries) {
             MapView view = Bukkit.createMap(world);
             MapView registered = Bukkit.getMap(view.getId());
-            logger.info("MDS map create id=" + view.getId() + " registered=" + (registered == null ? "null"
-                    : registered == view ? "same" : "different"));
             if (registered != null) {
                 view = registered;
             }
@@ -285,9 +275,6 @@ public final class NmsBridge {
             mapCenterZField.set(handle, entry.centerZ());
             mapLockedField.set(handle, entry.locked());
             markDirty(handle);
-            byte[] readBack = (byte[]) mapColorsField.get(handle);
-            logger.info("MDS map create: source=" + entry.mapId() + " target=" + view.getId()
-                    + " checksum=" + checksum(readBack));
             mapped.put(entry.mapId(), view.getId());
         }
         return mapped;
