@@ -33,7 +33,8 @@ public final class MikuDataSyncPaper extends JavaPlugin {
             return;
         }
 
-        NmsBridge.initialize(getLogger());
+        NmsBridge.initialize(getLogger(), config.serverId(),
+                new MapBindings(getDataFolder().toPath().resolve("map-bindings.properties")));
         ipcClient = new IpcClient(this, config);
         captureService = new CaptureService(getLogger(), config);
         applyService = new ApplyService(this, config);

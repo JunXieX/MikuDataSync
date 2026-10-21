@@ -10,6 +10,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapView;
 
+import com.junxiex.mikudatasync.common.ItemMapData;
 import com.junxiex.mikudatasync.common.MapDataList;
 
 import java.lang.reflect.Field;
@@ -59,6 +60,9 @@ public final class NmsBridge {
     private static Method mapIdId;
     private static java.lang.reflect.Constructor<?> mapIdNew;
     private static Method serverLevelGetMapData;
+    private static String mapServerId = "unknown";
+    private static MapBindings mapBindings;
+    private static final NamespacedKey MAP_ITEM_KEY = NamespacedKey.fromString("mikudatasync:map");
 
     // --- data bridge (statistics + advancements) ---
     private static boolean dataAvailable;
@@ -90,6 +94,12 @@ public final class NmsBridge {
     }
 
     public static synchronized void initialize(Logger pluginLogger) {
+        initialize(pluginLogger, "unknown", null);
+    }
+
+    public static synchronized void initialize(Logger pluginLogger, String serverId, MapBindings bindings) {
+        mapServerId = serverId;
+        mapBindings = bindings;
         if (initialized) {
             return;
         }
@@ -385,6 +395,133 @@ public final class NmsBridge {
         java.util.zip.CRC32 crc = new java.util.zip.CRC32();
         crc.update(colors);
         return (int) crc.getValue();
+    }
+
+    // ---------------------------------------------------------------- item maps
+
+    public static void persistMaps(Player player) {
+        if (!mapsAvailable || player == null) {
+            return;
+        }
+        persistMaps(player.getInventory().getContents(), player.getInventory());
+        persistMaps(player.getEnderChest().getContents(), player.getEnderChest());
+    }
+
+    private static void persistMaps(ItemStack[] items, org.bukkit.inventory.Inventory inventory) {
+        for (int i = 0; i < items.length; i++) {
+            ItemStack item = items[i];
+            if (item == null || item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
+                continue;
+            }
+            if (meta.getPersistentDataContainer().has(MAP_ITEM_KEY, org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+                continue;
+            }
+            try {
+                Object data = mapDataFor(inventory, meta.getMapId());
+                if (data == null) {
+                    continue;
+                }
+                byte[] colors = (byte[]) mapColorsField.get(data);
+                if (colors == null || colors.length != MapDataList.COLORS_LENGTH) {
+                    continue;
+                }
+                ItemMapData persisted = new ItemMapData(mapServerId, meta.getMapId(),
+                        (byte) mapScaleField.get(data), (int) mapCenterXField.get(data),
+                        (int) mapCenterZField.get(data), (boolean) mapLockedField.get(data), colors.clone());
+                meta.getPersistentDataContainer().set(MAP_ITEM_KEY,
+                        org.bukkit.persistence.PersistentDataType.BYTE_ARRAY, persisted.encode());
+                item.setItemMeta(meta);
+                inventory.setItem(i, item);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static Object mapDataFor(org.bukkit.inventory.Inventory inventory, int id) {
+        try {
+            // Maps are stored per world; use the first world whose map index knows the id.
+            for (org.bukkit.World world : Bukkit.getWorlds()) {
+                Object data = mapData(world, id);
+                if (data != null) {
+                    return data;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    public static void applyItemMaps(Player player, byte[] payload) {
+        if (!mapsAvailable || player == null || payload == null) {
+            return;
+        }
+        List<MapDataList.Entry> fallback = MapDataList.decode(payload);
+        java.util.Map<Integer, MapDataList.Entry> byId = new HashMap<>();
+        for (MapDataList.Entry entry : fallback) {
+            byId.put(entry.mapId(), entry);
+        }
+        applyItemMaps(player, player.getInventory().getContents(), player.getInventory(), byId);
+        applyItemMaps(player, player.getEnderChest().getContents(), player.getEnderChest(), byId);
+    }
+
+    private static void applyItemMaps(Player player, ItemStack[] items,
+                                      org.bukkit.inventory.Inventory inventory,
+                                      java.util.Map<Integer, MapDataList.Entry> fallback) {
+        for (int i = 0; i < items.length; i++) {
+            ItemStack item = items[i];
+            if (item == null || item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
+                continue;
+            }
+            try {
+                ItemMapData persisted = readItemMap(meta);
+                if (persisted == null) {
+                    MapDataList.Entry entry = fallback.get(meta.getMapId());
+                    if (entry == null) {
+                        continue;
+                    }
+                    persisted = new ItemMapData(mapServerId, entry.mapId(), entry.scale(),
+                            entry.centerX(), entry.centerZ(), entry.locked(), entry.colors().clone());
+                }
+                String key = persisted.originServer() + "#" + persisted.sourceMapId();
+                int targetId = mapBindings == null ? -1 : mapBindings.get(persisted.originServer(), persisted.sourceMapId());
+                MapView view = targetId >= 0 ? Bukkit.getMap(targetId) : null;
+                if (view == null) {
+                    view = Bukkit.createMap(Bukkit.getWorlds().get(0));
+                    view.getRenderers().clear();
+                    view.addRenderer(new MdsMapRenderer(persisted.colors()));
+                    view.setLocked(true);
+                    view.setScale(MapView.Scale.values()[Math.max(0, Math.min(4, persisted.scale()))]);
+                    view.setTrackingPosition(false);
+                    view.setUnlimitedTracking(false);
+                    if (mapBindings != null) {
+                        mapBindings.put(persisted.originServer(), persisted.sourceMapId(), view.getId());
+                    }
+                } else {
+                    view.getRenderers().clear();
+                    view.addRenderer(new MdsMapRenderer(persisted.colors()));
+                    view.setLocked(true);
+                }
+                meta.setMapId(view.getId());
+                meta.getPersistentDataContainer().set(MAP_ITEM_KEY,
+                        org.bukkit.persistence.PersistentDataType.BYTE_ARRAY, persisted.encode());
+                item.setItemMeta(meta);
+                inventory.setItem(i, item);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static ItemMapData readItemMap(MapMeta meta) {
+        byte[] bytes = meta.getPersistentDataContainer().get(MAP_ITEM_KEY,
+                org.bukkit.persistence.PersistentDataType.BYTE_ARRAY);
+        if (bytes == null) {
+            return null;
+        }
+        try {
+            return ItemMapData.decode(bytes);
+        } catch (ProtocolException e) {
+            return null;
+        }
     }
 
     // ---------------------------------------------------------------- cursor

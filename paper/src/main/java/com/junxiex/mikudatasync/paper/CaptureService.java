@@ -91,6 +91,7 @@ public final class CaptureService {
                 }
             }
             if (config.enabled(Segment.MAPS) && NmsBridge.mapBridgeAvailable()) {
+                NmsBridge.persistMaps(player);
                 byte[] maps = NmsBridge.captureMaps(player);
                 if (maps != null) {
                     segments.put(Segment.MAPS, maps);

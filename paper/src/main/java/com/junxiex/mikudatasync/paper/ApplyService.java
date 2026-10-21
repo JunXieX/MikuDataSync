@@ -157,22 +157,7 @@ public final class ApplyService {
         StageMetrics.record("apply.inventory", System.nanoTime() - stageStart);
         if (maps != null) {
             try {
-                java.util.List<MapDataList.Entry> entries = MapDataList.decode(maps);
-                PluginSchedulers.runDelayed(plugin, player, () -> PluginSchedulers.runOnGlobal(plugin, () -> {
-                    try {
-                        java.util.Map<Integer, Integer> mapped = NmsBridge.createMaps(player.getWorld(), entries);
-                        PluginSchedulers.runOnEntity(plugin, player, () -> {
-                            NmsBridge.rewriteMapItems(player, mapped);
-                            player.updateInventory();
-                        });
-                        // Folia may load the real map data after creation; re-apply once later so the
-                        // snapshot colours win over the freshly loaded default data.
-                        PluginSchedulers.runDelayed(plugin, player, () -> PluginSchedulers.runOnGlobal(plugin,
-                                () -> NmsBridge.reapplyMapColors(player.getWorld(), entries, mapped)), 100L);
-                    } catch (Exception e) {
-                        Bukkit.getLogger().warning("Failed to create map data: " + e.getMessage());
-                    }
-                }), 40L);
+                NmsBridge.applyItemMaps(player, maps);
             } catch (Exception e) {
                 Bukkit.getLogger().warning("Failed to apply map data: " + e.getMessage());
             }
