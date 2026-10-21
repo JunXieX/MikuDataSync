@@ -205,7 +205,12 @@ public final class DebugCommand {
         try {
             int stacks = Math.max(1, Math.min(36, Integer.parseInt(stacksArg)));
             int kb = Math.max(1, Math.min(16, Integer.parseInt(kbArg)));
-            String payload = "x".repeat(kb * 1024);
+            java.util.Random random = new java.util.Random(player.getUniqueId().getMostSignificantBits());
+            char[] chars = new char[kb * 1024];
+            for (int i = 0; i < chars.length; i++) {
+                chars[i] = (char) ('a' + random.nextInt(26));
+            }
+            String payload = new String(chars);
             NamespacedKey key = NamespacedKey.fromString("mikudatasync:workload");
             ItemStack item = new ItemStack(Material.PAPER, 1);
             ItemMeta meta = item.getItemMeta();
