@@ -12,7 +12,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Handles the proxy-requested flush before a server switch: close containers, capture the final
- * snapshot on the main thread, freeze the player until disconnect, and answer with PUT.
+ * snapshot on the player's entity/region thread, freeze the player until disconnect, and answer
+ * with PUT. Works on Paper and Folia through PluginSchedulers.
  */
 public final class HandoffManager {
 
@@ -36,24 +37,29 @@ public final class HandoffManager {
     }
 
     public void handleFlush(UUID uuid, long requestId) {
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
-            Player player = plugin.getServer().getPlayer(uuid);
-            if (player == null || !player.isOnline()) {
-                ipcClient.respond(requestId, Opcode.ERROR, error("player not online"));
-                return;
-            }
-            handoff.add(uuid);
-            try {
-                player.closeInventory();
-            } catch (Exception ignored) {
-            }
-            SnapshotMessage message = captureService.capture(player, "switch");
-            if (message == null) {
-                ipcClient.respond(requestId, Opcode.ERROR, error("capture failed"));
-                return;
-            }
-            ipcClient.respond(requestId, Opcode.PUT, IpcPayloads.putRequest(uuid, message));
-        });
+        Player player = plugin.getServer().getPlayer(uuid);
+        if (player == null) {
+            ipcClient.respond(requestId, Opcode.ERROR, error("player not online"));
+            return;
+        }
+        PluginSchedulers.runOnEntityOrElse(plugin, player,
+                () -> captureAndRespond(player, requestId),
+                () -> ipcClient.respond(requestId, Opcode.ERROR, error("player retired")));
+    }
+
+    private void captureAndRespond(Player player, long requestId) {
+        UUID uuid = player.getUniqueId();
+        handoff.add(uuid);
+        try {
+            player.closeInventory();
+        } catch (Exception ignored) {
+        }
+        SnapshotMessage message = captureService.capture(player, "switch");
+        if (message == null) {
+            ipcClient.respond(requestId, Opcode.ERROR, error("capture failed"));
+            return;
+        }
+        ipcClient.respond(requestId, Opcode.PUT, IpcPayloads.putRequest(uuid, message));
     }
 
     private static byte[] error(String message) {

@@ -4,4 +4,4 @@ main: com.junxiex.mikudatasync.paper.MikuDataSyncPaper
 api-version: '26.3'
 description: Cross-server player data synchronization for Paper behind Velocity
 author: JunXieX
-folia-supported: false
+folia-supported: true

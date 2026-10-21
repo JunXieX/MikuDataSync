@@ -11,6 +11,7 @@ import com.junxiex.mikudatasync.paper.MikuDataSyncPaper;
 import com.junxiex.mikudatasync.paper.NmsBridge;
 import com.junxiex.mikudatasync.paper.PaperConfig;
 import com.junxiex.mikudatasync.paper.PendingSnapshots;
+import com.junxiex.mikudatasync.paper.PluginSchedulers;
 import net.kyori.adventure.text.Component;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -103,7 +104,7 @@ public final class PlayerListener implements Listener {
         if (message == null) {
             return;
         }
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () ->
+        PluginSchedulers.runAsync(plugin, () ->
                 ipcClient.putSnapshot(uuid, message, 5000L).whenComplete((seq, error) -> {
                     if (error != null) {
                         plugin.getLogger().warning("Failed to persist quit snapshot for " + uuid + ": " + error.getMessage());

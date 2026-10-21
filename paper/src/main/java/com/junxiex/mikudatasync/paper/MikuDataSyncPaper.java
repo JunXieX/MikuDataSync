@@ -63,7 +63,8 @@ public final class MikuDataSyncPaper extends JavaPlugin {
                         java.util.List.of()
                 ));
         startPeriodicSnapshots();
-        getLogger().info("MikuDataSync backend enabled for server " + config.serverId());
+        getLogger().info("MikuDataSync backend enabled for server " + config.serverId()
+                + " (" + (PluginSchedulers.isFolia() ? "Folia" : "Paper") + ")");
     }
 
     private void startPeriodicSnapshots() {
@@ -72,22 +73,24 @@ public final class MikuDataSyncPaper extends JavaPlugin {
             return;
         }
         long ticks = 20L * seconds;
-        getServer().getScheduler().runTaskTimer(this, this::snapshotOnlinePlayers, ticks, ticks);
+        PluginSchedulers.runTimer(this, this::snapshotOnlinePlayers, ticks, ticks);
     }
 
     private void snapshotOnlinePlayers() {
         for (Player player : getServer().getOnlinePlayers()) {
-            SnapshotMessage message = captureService.capture(player, "periodic");
-            if (message == null) {
-                continue;
-            }
-            UUID uuid = player.getUniqueId();
-            getServer().getScheduler().runTaskAsynchronously(this, () ->
-                    ipcClient.putSnapshot(uuid, message, 5000L).whenComplete((seq, error) -> {
-                        if (error != null) {
-                            getLogger().fine("Periodic snapshot failed for " + uuid + ": " + error.getMessage());
-                        }
-                    }));
+            PluginSchedulers.runOnEntity(this, player, () -> {
+                SnapshotMessage message = captureService.capture(player, "periodic");
+                if (message == null) {
+                    return;
+                }
+                UUID uuid = player.getUniqueId();
+                PluginSchedulers.runAsync(this, () ->
+                        ipcClient.putSnapshot(uuid, message, 5000L).whenComplete((seq, error) -> {
+                            if (error != null) {
+                                getLogger().fine("Periodic snapshot failed for " + uuid + ": " + error.getMessage());
+                            }
+                        }));
+            });
         }
     }
 
