@@ -441,8 +441,13 @@ public final class NmsBridge {
         Object handle = craftGetHandle.invoke(player);
         Object counter = serverPlayerStatsField.get(handle);
         Object existingRaw = statsCounterStatsField.get(counter);
-        if (existingRaw instanceof Map<?, ?> existingStats) {
+        Map<?, ?> existingStats = existingRaw instanceof Map<?, ?> map ? map : null;
+        if (existingStats != null) {
             for (Object stat : new ArrayList<>(existingStats.keySet())) {
+                Object current = existingStats.get(stat);
+                if (current instanceof Number number && number.intValue() == 0) {
+                    continue;
+                }
                 try {
                     statsCounterSetValue.invoke(counter, handle, stat, 0);
                 } catch (Throwable ignored) {
@@ -470,9 +475,16 @@ public final class NmsBridge {
                 continue;
             }
             Object stat = statTypeGet.invoke(statType, value);
-            if (stat != null) {
-                statsCounterSetValue.invoke(counter, handle, stat, entry.value());
+            if (stat == null) {
+                continue;
             }
+            if (existingStats != null) {
+                Object current = existingStats.get(stat);
+                if (current instanceof Number number && number.intValue() == entry.value()) {
+                    continue;
+                }
+            }
+            statsCounterSetValue.invoke(counter, handle, stat, entry.value());
         }
     }
 
@@ -546,22 +558,24 @@ public final class NmsBridge {
             }
             Object progress = advancementGetOrStartProgress.invoke(playerAdvancements, holder);
             Set<String> desired = new HashSet<>(entry.criteria());
+            Set<String> completed = new HashSet<>();
+            Object currentRaw = advancementGetCompletedCriteria.invoke(progress);
+            if (currentRaw instanceof Iterable<?> current) {
+                for (Object criterion : current) {
+                    completed.add(String.valueOf(criterion));
+                }
+            }
             if (strict) {
-                Object currentRaw = advancementGetCompletedCriteria.invoke(progress);
-                if (currentRaw instanceof Iterable<?> current) {
-                    List<String> revoke = new ArrayList<>();
-                    for (Object criterion : current) {
-                        String value = String.valueOf(criterion);
-                        if (!desired.contains(value)) {
-                            revoke.add(value);
-                        }
-                    }
-                    for (String criterion : revoke) {
+                for (String criterion : completed) {
+                    if (!desired.contains(criterion)) {
                         advancementRevokeProgress.invoke(progress, criterion);
                     }
                 }
             }
             for (String criterion : desired) {
+                if (completed.contains(criterion)) {
+                    continue;
+                }
                 try {
                     advancementGrantProgress.invoke(progress, criterion);
                 } catch (Throwable ignored) {

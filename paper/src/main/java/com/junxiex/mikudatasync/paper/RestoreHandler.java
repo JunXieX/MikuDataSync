@@ -28,10 +28,11 @@ public final class RestoreHandler {
             if (player == null) {
                 return;
             }
+            SnapshotEnvelope envelope = SnapshotEnvelope.decode(message.envelope());
+            ApplyService.Prepared prepared = applyService.prepare(envelope);
             PluginSchedulers.runOnEntityOrElse(plugin, player, () -> {
                 try {
-                    SnapshotEnvelope envelope = SnapshotEnvelope.decode(message.envelope());
-                    applyService.apply(player, envelope);
+                    applyService.apply(player, prepared);
                     player.sendMessage(Component.text("数据已恢复"));
                 } catch (Exception e) {
                     plugin.getLogger().severe("Failed to apply restored snapshot: " + e.getMessage());

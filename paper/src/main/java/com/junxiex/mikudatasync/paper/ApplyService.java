@@ -41,7 +41,13 @@ public final class ApplyService {
         this.config = config;
     }
 
-    public void apply(Player player, SnapshotEnvelope envelope) throws Exception {
+    public record Prepared(SnapshotEnvelope envelope, CoreData core, List<EffectList.Entry> effects,
+                           List<AttributeList.Entry> attributes, ItemStack[] inventory, ItemStack[] enderChest,
+                           MiscData misc, byte[] pdc, byte[] advancements, byte[] statistics, byte[] maps) {
+    }
+
+    /** Decodes the snapshot off the entity thread; apply() then only performs mutations. */
+    public Prepared prepare(SnapshotEnvelope envelope) throws Exception {
         if (envelope.schemaVersion() > Protocol.SCHEMA_VERSION) {
             throw new ProtocolException("unsupported schema version: " + envelope.schemaVersion());
         }
@@ -49,10 +55,7 @@ public final class ApplyService {
             throw new ProtocolException("data version mismatch: snapshot=" + envelope.dataVersion()
                     + ", local=" + NmsBridge.dataVersion());
         }
-
-        long start = System.nanoTime();
         long stageStart = System.nanoTime();
-        // Decode everything first: any failure aborts before mutating the player.
         CoreData core = envelope.hasSegment(Segment.CORE) ? CoreData.decode(envelope.segment(Segment.CORE)) : null;
         List<EffectList.Entry> effects = envelope.hasSegment(Segment.EFFECTS)
                 ? EffectList.decode(envelope.segment(Segment.EFFECTS)) : null;
@@ -63,10 +66,32 @@ public final class ApplyService {
         ItemStack[] enderChest = envelope.hasSegment(Segment.ENDER_CHEST)
                 ? decodeItems(envelope.segment(Segment.ENDER_CHEST), 27) : null;
         MiscData misc = envelope.hasSegment(Segment.MISC) ? MiscData.decode(envelope.segment(Segment.MISC)) : null;
-        byte[] pdc = envelope.segment(Segment.PDC);
-        byte[] advancements = envelope.segment(Segment.ADVANCEMENTS);
-        byte[] statistics = envelope.segment(Segment.STATISTICS);
+        byte[] maps = envelope.segment(Segment.MAPS);
         StageMetrics.record("apply.decode", System.nanoTime() - stageStart);
+        return new Prepared(envelope, core, effects, attributes, inventory, enderChest, misc,
+                envelope.segment(Segment.PDC), envelope.segment(Segment.ADVANCEMENTS),
+                envelope.segment(Segment.STATISTICS), maps);
+    }
+
+    public void apply(Player player, SnapshotEnvelope envelope) throws Exception {
+        apply(player, prepare(envelope));
+    }
+
+    public void apply(Player player, Prepared prepared) throws Exception {
+        SnapshotEnvelope envelope = prepared.envelope();
+        CoreData core = prepared.core();
+        List<EffectList.Entry> effects = prepared.effects();
+        List<AttributeList.Entry> attributes = prepared.attributes();
+        ItemStack[] inventory = prepared.inventory();
+        ItemStack[] enderChest = prepared.enderChest();
+        MiscData misc = prepared.misc();
+        byte[] pdc = prepared.pdc();
+        byte[] advancements = prepared.advancements();
+        byte[] statistics = prepared.statistics();
+        byte[] maps = prepared.maps();
+
+        long start = System.nanoTime();
+        long stageStart = System.nanoTime();
 
         Bukkit.getPluginManager().callEvent(new MikuDataSyncApplyEvent(player, envelope));
         if (core != null) {
@@ -130,7 +155,6 @@ public final class ApplyService {
             player.getInventory().setHeldItemSlot(slot);
         }
         StageMetrics.record("apply.inventory", System.nanoTime() - stageStart);
-        byte[] maps = envelope.segment(Segment.MAPS);
         if (maps != null) {
             try {
                 java.util.List<MapDataList.Entry> entries = MapDataList.decode(maps);

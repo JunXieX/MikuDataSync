@@ -72,7 +72,8 @@ public final class PlayerListener implements Listener {
                         + ", local=" + NmsBridge.dataVersion());
                 return;
             }
-            pendingSnapshots.put(uuid, new PendingSnapshots.Pending(envelope, message.seq(), System.currentTimeMillis()));
+            ApplyService.Prepared prepared = applyService.prepare(envelope);
+            pendingSnapshots.put(uuid, new PendingSnapshots.Pending(envelope, message.seq(), System.currentTimeMillis(), prepared));
         } catch (Exception e) {
             unavailable(event, "failed to fetch snapshot: " + e.getMessage());
         }
@@ -86,7 +87,7 @@ public final class PlayerListener implements Listener {
             return;
         }
         try {
-            applyService.apply(player, pending.envelope());
+            applyService.apply(player, pending.prepared());
             PluginSchedulers.runDelayed(plugin, player, () -> {
                 try {
                     applyService.applyCursor(player, pending.envelope());
