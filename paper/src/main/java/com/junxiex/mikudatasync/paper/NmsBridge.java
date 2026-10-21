@@ -286,8 +286,13 @@ public final class NmsBridge {
             // Allocate and register the map through the server map index. Bukkit.createMap can race
             // the map registry on Folia (the saved data is loaded after creation and overwrites the
             // colours), so use the authoritative NMS path instead.
-            Object mapId = serverLevelGetFreeMapId.invoke(level);
-            int newId = (int) mapIdId.invoke(mapId);
+            Object mapId;
+            int newId;
+            int tries = 0;
+            do {
+                mapId = serverLevelGetFreeMapId.invoke(level);
+                newId = (int) mapIdId.invoke(mapId);
+            } while (serverLevelGetMapData.invoke(level, mapId) != null && ++tries < 4096);
             Object data = mapDataCreateFresh.invoke(null, (double) entry.centerX(), (double) entry.centerZ(),
                     entry.scale(), false, false, dimension);
             mapColorsField.set(data, entry.colors().clone());
