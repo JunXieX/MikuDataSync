@@ -58,7 +58,7 @@ public record VelocityConfig(
         int fsyncIntervalMs = MiniYaml.getInt(root, "store.fsync-interval-ms", 50);
         boolean retainOffline = MiniYaml.getBoolean(root, "store.retain-offline-snapshots", false);
 
-        int switchTimeoutMs = MiniYaml.getInt(root, "sync.switch-timeout-ms", 500);
+        int switchTimeoutMs = MiniYaml.getInt(root, "sync.switch-timeout-ms", 1500);
         int getWaitMs = MiniYaml.getInt(root, "sync.get-wait-ms", 300);
         String failMode = MiniYaml.getString(root, "sync.fail-mode", "closed");
         int periodicFlushSeconds = MiniYaml.getInt(root, "sync.periodic-flush-seconds", 30);

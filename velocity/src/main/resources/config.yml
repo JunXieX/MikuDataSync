@@ -13,7 +13,7 @@ store:
   retain-offline-snapshots: false
 
 sync:
-  switch-timeout-ms: 500
+  switch-timeout-ms: 1500
   get-wait-ms: 300
   fail-mode: "closed"
   periodic-flush-seconds: 30

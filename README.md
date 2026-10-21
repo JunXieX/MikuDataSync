@@ -35,7 +35,7 @@
 | `store.journal-file` | data/journal.mds | 快照日志文件（唯一持久层，请纳入备份） |
 | `store.fsync-mode` | interval | always / interval / never；切服与退服记录始终落盘 |
 | `store.retain-offline-snapshots` | false | 是否在内存保留离线玩家快照 |
-| `sync.switch-timeout-ms` | 500 | 切服闸门等待源服快照的时间 |
+| `sync.switch-timeout-ms` | 1500 | 切服闸门等待源服快照的时间 |
 | `sync.get-wait-ms` | 300 | 预登录取数时等待在途快照提交的时间 |
 | `sync.fail-mode` | closed | closed（不确定就拒绝切换）/ open / kick |
 | `sync.periodic-flush-seconds` | 30 | 周期快照间隔 |
