@@ -71,7 +71,7 @@ public final class IpcClient implements AutoCloseable {
 
     public void start() {
         io.execute(this::runLoop);
-        timer.scheduleWithFixedDelay(this::ping, 15L, 15L, TimeUnit.SECONDS);
+        timer.scheduleWithFixedDelay(this::ping, 10L, 10L, TimeUnit.SECONDS);
     }
 
     public State state() {

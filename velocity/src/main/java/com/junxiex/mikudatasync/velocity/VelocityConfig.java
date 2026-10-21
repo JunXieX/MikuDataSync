@@ -51,7 +51,7 @@ public record VelocityConfig(
         String host = MiniYaml.getString(root, "protocol.bind", "127.0.0.1");
         int port = MiniYaml.getInt(root, "protocol.port", 25666);
         String secret = MiniYaml.getString(root, "protocol.secret", "");
-        int readTimeoutMs = MiniYaml.getInt(root, "protocol.read-timeout-ms", 15000);
+        int readTimeoutMs = Math.max(30000, MiniYaml.getInt(root, "protocol.read-timeout-ms", 60000));
 
         String journalFile = MiniYaml.getString(root, "store.journal-file", "data/journal.mds");
         String fsyncModeRaw = MiniYaml.getString(root, "store.fsync-mode", "interval");
