@@ -21,7 +21,9 @@ import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,6 +39,7 @@ public final class PlayerListener implements Listener {
     private final ApplyService applyService;
     private final PendingSnapshots pendingSnapshots;
     private final HandoffManager handoffManager;
+    private final Set<UUID> skipQuit = ConcurrentHashMap.newKeySet();
 
     public PlayerListener(MikuDataSyncPaper plugin, PaperConfig config, IpcClient ipcClient,
                           CaptureService captureService, ApplyService applyService,
@@ -106,10 +109,20 @@ public final class PlayerListener implements Listener {
         }
     }
 
+    public void markRestored(UUID uuid) {
+        skipQuit.add(uuid);
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
+        if (skipQuit.remove(uuid)) {
+            pendingSnapshots.remove(uuid);
+            captureService.forget(uuid);
+            handoffManager.clear(uuid);
+            return;
+        }
         pendingSnapshots.remove(uuid);
         captureService.forget(uuid);
         if (handoffManager.isHandingOff(uuid)) {

@@ -1,6 +1,8 @@
 package com.junxiex.mikudatasync.velocity.command;
 
+import com.junxiex.mikudatasync.common.IpcPayloads;
 import com.junxiex.mikudatasync.common.Metrics;
+import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.velocity.BackupService;
@@ -162,9 +164,16 @@ public final class MdsCommand implements SimpleCommand {
         }
         try {
             SnapshotMessage message = backups.read(arguments[2]);
-            long seq = store.commit(player.get().getUniqueId(), message);
+            var target = player.get();
+            long seq = store.commit(target.getUniqueId(), message);
+            target.getCurrentServer().ifPresent(connection ->
+                    ipcServer.send(connection.getServerInfo().getName(), Opcode.RESTORE_NOTICE,
+                            IpcPayloads.uuid(target.getUniqueId())));
             source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
-                    + " (applies on next join)"));
+                    + "; reconnecting player"));
+            server.getScheduler().buildTask(plugin, () ->
+                    target.disconnect(Component.text("数据已恢复，请重新连接")))
+                    .delay(300, TimeUnit.MILLISECONDS).schedule();
         } catch (Exception e) {
             source.sendMessage(Component.text("Restore failed: " + e.getMessage()));
         }

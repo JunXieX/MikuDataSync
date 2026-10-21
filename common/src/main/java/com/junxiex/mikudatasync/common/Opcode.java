@@ -19,7 +19,8 @@ public enum Opcode {
     PING(20),
     PONG(21),
     STATS_REQ(22),
-    STATS_RES(23);
+    STATS_RES(23),
+    RESTORE_NOTICE(24);
 
     private final int code;
 
