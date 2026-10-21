@@ -51,6 +51,12 @@ public final class NmsBridge {
     private static Field mapCenterZField;
     private static Field mapLockedField;
     private static Method mapSetDirty;
+    private static Method craftWorldGetHandle;
+    private static Method serverLevelGetFreeMapId;
+    private static Method serverLevelSetMapData;
+    private static Method serverLevelDimension;
+    private static Method mapDataCreateFresh;
+    private static Method mapIdId;
 
     // --- data bridge (statistics + advancements) ---
     private static boolean dataAvailable;
@@ -123,6 +129,17 @@ public final class NmsBridge {
             } catch (Throwable ignored) {
                 mapSetDirty = null;
             }
+            Class<?> craftWorld = Class.forName("org.bukkit.craftbukkit.CraftWorld");
+            Class<?> serverLevel = Class.forName("net.minecraft.server.level.ServerLevel");
+            Class<?> mapId = Class.forName("net.minecraft.world.level.saveddata.maps.MapId");
+            Class<?> resourceKey = Class.forName("net.minecraft.resources.ResourceKey");
+            craftWorldGetHandle = craftWorld.getMethod("getHandle");
+            serverLevelGetFreeMapId = serverLevel.getMethod("getFreeMapId");
+            serverLevelSetMapData = serverLevel.getMethod("setMapData", mapId, mapData);
+            serverLevelDimension = serverLevel.getMethod("dimension");
+            mapDataCreateFresh = mapData.getMethod("createFresh", double.class, double.class, byte.class,
+                    boolean.class, boolean.class, resourceKey);
+            mapIdId = mapId.getMethod("id");
             mapsAvailable = true;
         } catch (Throwable t) {
             logger.warning("NMS map bridge unavailable: " + t);
@@ -262,20 +279,20 @@ public final class NmsBridge {
 
     public static Map<Integer, Integer> createMaps(org.bukkit.World world, List<MapDataList.Entry> entries) throws Exception {
         Map<Integer, Integer> mapped = new HashMap<>();
+        Object level = craftWorldGetHandle.invoke(world);
+        Object dimension = serverLevelDimension.invoke(level);
         for (MapDataList.Entry entry : entries) {
-            MapView view = Bukkit.createMap(world);
-            MapView registered = Bukkit.getMap(view.getId());
-            if (registered != null) {
-                view = registered;
-            }
-            Object handle = mapHandle(view);
-            mapColorsField.set(handle, entry.colors().clone());
-            mapScaleField.set(handle, entry.scale());
-            mapCenterXField.set(handle, entry.centerX());
-            mapCenterZField.set(handle, entry.centerZ());
-            mapLockedField.set(handle, entry.locked());
-            markDirty(handle);
-            mapped.put(entry.mapId(), view.getId());
+            // Allocate and register the map through the server map index. Bukkit.createMap can race
+            // the map registry on Folia (the saved data is loaded after creation and overwrites the
+            // colours), so use the authoritative NMS path instead.
+            Object mapId = serverLevelGetFreeMapId.invoke(level);
+            int newId = (int) mapIdId.invoke(mapId);
+            Object data = mapDataCreateFresh.invoke(null, (double) entry.centerX(), (double) entry.centerZ(),
+                    entry.scale(), false, false, dimension);
+            mapColorsField.set(data, entry.colors().clone());
+            mapLockedField.set(data, entry.locked());
+            serverLevelSetMapData.invoke(level, mapId, data);
+            mapped.put(entry.mapId(), newId);
         }
         return mapped;
     }
