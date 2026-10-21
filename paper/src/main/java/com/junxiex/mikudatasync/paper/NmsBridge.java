@@ -262,6 +262,30 @@ public final class NmsBridge {
         rewriteMapItems(player.getEnderChest().getContents(), mapped, player.getEnderChest());
     }
 
+    public static Map<Integer, Integer> createMaps(org.bukkit.World world, List<MapDataList.Entry> entries) throws Exception {
+        Map<Integer, Integer> mapped = new HashMap<>();
+        for (MapDataList.Entry entry : entries) {
+            MapView view = Bukkit.createMap(world);
+            Object handle = mapHandle(view);
+            mapColorsField.set(handle, entry.colors().clone());
+            mapScaleField.set(handle, entry.scale());
+            mapCenterXField.set(handle, entry.centerX());
+            mapCenterZField.set(handle, entry.centerZ());
+            mapLockedField.set(handle, entry.locked());
+            markDirty(handle);
+            mapped.put(entry.mapId(), view.getId());
+        }
+        return mapped;
+    }
+
+    public static void rewriteMapItems(Player player, Map<Integer, Integer> mapped) {
+        if (mapped == null || mapped.isEmpty()) {
+            return;
+        }
+        rewriteMapItems(player.getInventory().getContents(), mapped, player.getInventory());
+        rewriteMapItems(player.getEnderChest().getContents(), mapped, player.getEnderChest());
+    }
+
     private static void rewriteMapItems(ItemStack[] items, Map<Integer, Integer> mapped,
                                         org.bukkit.inventory.Inventory inventory) {
         if (items == null) {

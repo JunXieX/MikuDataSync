@@ -38,6 +38,14 @@ public final class PluginSchedulers {
         }
     }
 
+    public static void runOnGlobal(Plugin plugin, Runnable action) {
+        if (FOLIA) {
+            Bukkit.getGlobalRegionScheduler().execute(plugin, action);
+        } else {
+            Bukkit.getScheduler().runTask(plugin, action);
+        }
+    }
+
     public static void runAsync(Plugin plugin, Runnable action) {
         if (FOLIA) {
             Bukkit.getAsyncScheduler().runNow(plugin, task -> action.run());

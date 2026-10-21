@@ -4,6 +4,7 @@ import com.junxiex.mikudatasync.common.AttributeList;
 import com.junxiex.mikudatasync.common.CoreData;
 import com.junxiex.mikudatasync.common.EffectList;
 import com.junxiex.mikudatasync.common.Metrics;
+import com.junxiex.mikudatasync.common.MapDataList;
 import com.junxiex.mikudatasync.common.MiscData;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.ProtocolException;
@@ -31,9 +32,11 @@ import java.util.List;
  */
 public final class ApplyService {
 
+    private final org.bukkit.plugin.Plugin plugin;
     private final PaperConfig config;
 
-    public ApplyService(PaperConfig config) {
+    public ApplyService(org.bukkit.plugin.Plugin plugin, PaperConfig config) {
+        this.plugin = plugin;
         this.config = config;
     }
 
@@ -125,7 +128,18 @@ public final class ApplyService {
         byte[] maps = envelope.segment(Segment.MAPS);
         if (maps != null) {
             try {
-                NmsBridge.applyMaps(player, maps);
+                java.util.List<MapDataList.Entry> entries = MapDataList.decode(maps);
+                PluginSchedulers.runOnGlobal(plugin, () -> {
+                    try {
+                        java.util.Map<Integer, Integer> mapped = NmsBridge.createMaps(player.getWorld(), entries);
+                        PluginSchedulers.runOnEntity(plugin, player, () -> {
+                            NmsBridge.rewriteMapItems(player, mapped);
+                            player.updateInventory();
+                        });
+                    } catch (Exception e) {
+                        Bukkit.getLogger().warning("Failed to create map data: " + e.getMessage());
+                    }
+                });
             } catch (Exception e) {
                 Bukkit.getLogger().warning("Failed to apply map data: " + e.getMessage());
             }

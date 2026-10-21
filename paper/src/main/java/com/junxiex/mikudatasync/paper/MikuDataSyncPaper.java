@@ -36,7 +36,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         NmsBridge.initialize(getLogger());
         ipcClient = new IpcClient(this, config);
         captureService = new CaptureService(getLogger(), config);
-        applyService = new ApplyService(config);
+        applyService = new ApplyService(this, config);
         pendingSnapshots = new PendingSnapshots();
         handoffManager = new HandoffManager(this, ipcClient, captureService);
 
