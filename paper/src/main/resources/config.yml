@@ -20,13 +20,8 @@ sync:
     attributes: true
     pdc: true
     cursor-item: true
-    recipes: false
-    location: false
   pdc-merge: false
   advancement-strict: true
-  excluded-worlds: []
-  world-map: {}
-  location-apply-delay-ticks: 1
   periodic-snapshot-seconds: 30
   prelogin-fetch-timeout-ms: 500
   on-sync-unavailable: "kick"

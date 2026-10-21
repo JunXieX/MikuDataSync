@@ -36,7 +36,7 @@ public final class ApplyService {
     }
 
     public void apply(Player player, SnapshotEnvelope envelope) throws Exception {
-        if (envelope.schemaVersion() != Protocol.SCHEMA_VERSION) {
+        if (envelope.schemaVersion() > Protocol.SCHEMA_VERSION) {
             throw new ProtocolException("unsupported schema version: " + envelope.schemaVersion());
         }
         if (envelope.dataVersion() != NmsBridge.dataVersion()) {

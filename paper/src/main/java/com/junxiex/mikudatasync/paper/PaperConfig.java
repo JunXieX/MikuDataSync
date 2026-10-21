@@ -17,8 +17,6 @@ public record PaperConfig(
         Set<Integer> enabledSegments,
         boolean pdcMerge,
         boolean advancementStrict,
-        List<String> excludedWorlds,
-        int locationApplyDelayTicks,
         int periodicSnapshotSeconds,
         int preloginFetchTimeoutMs,
         String onSyncUnavailable,
@@ -68,12 +66,6 @@ public record PaperConfig(
         if (cfg.getBoolean("sync.sections.cursor-item", true)) {
             segments.add(Segment.MISC);
         }
-        if (cfg.getBoolean("sync.sections.recipes", false)) {
-            segments.add(Segment.RECIPES);
-        }
-        if (cfg.getBoolean("sync.sections.location", false)) {
-            segments.add(Segment.LOCATION);
-        }
         boolean core = cfg.getBoolean("sync.sections.health", true)
                 || cfg.getBoolean("sync.sections.food", true)
                 || cfg.getBoolean("sync.sections.experience", true)
@@ -97,8 +89,6 @@ public record PaperConfig(
                 Set.copyOf(segments),
                 cfg.getBoolean("sync.pdc-merge", false),
                 cfg.getBoolean("sync.advancement-strict", true),
-                List.copyOf(cfg.getStringList("sync.excluded-worlds")),
-                Math.max(0, cfg.getInt("sync.location-apply-delay-ticks", 1)),
                 Math.max(5, cfg.getInt("sync.periodic-snapshot-seconds", 30)),
                 Math.max(50, cfg.getInt("sync.prelogin-fetch-timeout-ms", 500)),
                 onSyncUnavailable,

@@ -7,7 +7,7 @@ public final class Protocol {
     public static final int MAGIC = 0x4D445331;
 
     public static final int PROTOCOL_VERSION = 1;
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
 
     /** Maximum size of one IPC frame (header included). */
     public static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;

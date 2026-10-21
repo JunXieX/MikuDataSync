@@ -136,6 +136,39 @@ class CodecCoverageTest {
     }
 
     @Test
+    void compressionRoundTrip() throws Exception {
+        java.util.Random random = new java.util.Random(7L);
+        byte[] big = new byte[8192];
+        random.nextBytes(big);
+        SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 5023,
+                Map.of(Segment.INVENTORY, big, Segment.CORE, new byte[] {1, 2, 3}));
+        SnapshotEnvelope decoded = SnapshotEnvelope.decode(envelope.encode());
+        assertArrayEquals(big, decoded.segment(Segment.INVENTORY));
+    }
+
+    @Test
+    void legacySchemaStillDecodes() throws Exception {
+        byte[] payload = new byte[] {1, 2, 3};
+        ByteWriter writer = new ByteWriter(64);
+        writer.writeInt(Protocol.MAGIC);
+        writer.writeByte(1);
+        writer.writeByte(1);
+        writer.writeInt(5023);
+        writer.writeShort(1);
+        writer.writeShort(Segment.CORE);
+        writer.writeInt(payload.length);
+        writer.writeBytes(payload);
+        byte[] body = writer.toByteArray();
+        int crc = Crc32c.compute(body, 0, body.length);
+        ByteWriter out = new ByteWriter(body.length + 4);
+        out.writeBytes(body);
+        out.writeInt(crc);
+        SnapshotEnvelope decoded = SnapshotEnvelope.decode(out.toByteArray());
+        assertEquals(1, decoded.schemaVersion());
+        assertArrayEquals(payload, decoded.segment(Segment.CORE));
+    }
+
+    @Test
     void hmacVerification() {
         String secret = "test-secret-0123456789";
         String payload = "server-1|123|nonce|1";

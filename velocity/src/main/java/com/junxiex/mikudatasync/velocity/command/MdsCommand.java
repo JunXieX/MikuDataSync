@@ -34,6 +34,11 @@ public final class MdsCommand implements SimpleCommand {
     }
 
     @Override
+    public boolean hasPermission(Invocation invocation) {
+        return invocation.source().hasPermission("mikudatasync.admin");
+    }
+
+    @Override
     public void execute(Invocation invocation) {
         CommandSource source = invocation.source();
         String[] arguments = invocation.arguments();
