@@ -40,7 +40,7 @@ public final class RestoreHandler {
                 }
             }, () -> {
             });
-        } catch (ProtocolException e) {
+        } catch (Exception e) {
             plugin.getLogger().warning("Invalid restore payload: " + e.getMessage());
         }
     }
