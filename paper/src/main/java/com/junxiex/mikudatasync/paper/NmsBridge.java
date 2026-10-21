@@ -35,6 +35,7 @@ public final class NmsBridge {
     private static Method menuSetCarried;
     private static Method craftAsBukkitCopy;
     private static Method craftAsNMSCopy;
+    private static Object nmsEmptyStack;
     private static boolean cursorAvailable;
 
     // --- data bridge (statistics + advancements) ---
@@ -105,6 +106,7 @@ public final class NmsBridge {
             menuSetCarried = menuClass.getMethod("setCarried", nmsItemStack);
             craftAsBukkitCopy = craftItemStack.getMethod("asBukkitCopy", itemInstance);
             craftAsNMSCopy = craftItemStack.getMethod("asNMSCopy", ItemStack.class);
+            nmsEmptyStack = nmsItemStack.getField("EMPTY").get(null);
             cursorAvailable = true;
             logger.info("NMS cursor bridge ready");
         } catch (Throwable t) {
@@ -135,7 +137,8 @@ public final class NmsBridge {
         try {
             Object handle = craftGetHandle.invoke(player);
             Object menu = containerMenuField.get(handle);
-            Object nmsItem = item == null ? null : craftAsNMSCopy.invoke(null, item);
+            // AbstractContainerMenu.carried must never be null in NMS; null causes an NPE on menu tick/close.
+            Object nmsItem = item == null ? nmsEmptyStack : craftAsNMSCopy.invoke(null, item);
             menuSetCarried.invoke(menu, nmsItem);
         } catch (Throwable t) {
             logger.fine("Failed to restore cursor item: " + t);
