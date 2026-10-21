@@ -178,6 +178,11 @@ public final class NmsBridge {
             return null;
         }
         try {
+            ItemMapData persisted = readItemMap(meta);
+            if (persisted != null) {
+                return new MapInfo(meta.getMapId(), persisted.scale(), persisted.centerX(),
+                        persisted.centerZ(), persisted.locked(), checksum(persisted.colors()));
+            }
             Object handle = mapData(player.getWorld(), meta.getMapId());
             if (handle == null) {
                 return null;
