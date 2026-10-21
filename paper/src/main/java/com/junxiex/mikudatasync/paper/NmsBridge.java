@@ -266,6 +266,10 @@ public final class NmsBridge {
         Map<Integer, Integer> mapped = new HashMap<>();
         for (MapDataList.Entry entry : entries) {
             MapView view = Bukkit.createMap(world);
+            MapView registered = Bukkit.getMap(view.getId());
+            if (registered != null) {
+                view = registered;
+            }
             Object handle = mapHandle(view);
             mapColorsField.set(handle, entry.colors().clone());
             mapScaleField.set(handle, entry.scale());
@@ -273,6 +277,9 @@ public final class NmsBridge {
             mapCenterZField.set(handle, entry.centerZ());
             mapLockedField.set(handle, entry.locked());
             markDirty(handle);
+            byte[] readBack = (byte[]) mapColorsField.get(handle);
+            logger.info("MDS map create: source=" + entry.mapId() + " target=" + view.getId()
+                    + " checksum=" + checksum(readBack));
             mapped.put(entry.mapId(), view.getId());
         }
         return mapped;
