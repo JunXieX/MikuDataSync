@@ -98,7 +98,13 @@ public final class CaptureService {
             if (config.logTimings()) {
                 logger.fine("capture " + cause + " took " + (System.nanoTime() - start) / 1_000_000.0 + "ms");
             }
-            byte[] encoded = timed("capture.encode", envelope::encode);
+            long encodeStart = System.nanoTime();
+            byte[] encoded;
+            try {
+                encoded = envelope.encode();
+            } finally {
+                StageMetrics.record("capture.encode", System.nanoTime() - encodeStart);
+            }
             SnapshotMessage message = new SnapshotMessage(0L, captureSeq, cause, serverId, encoded);
             Bukkit.getPluginManager().callEvent(new MikuDataSyncCaptureEvent(player, cause, message));
             return message;
