@@ -11,6 +11,7 @@ import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapView;
 
 import com.junxiex.mikudatasync.common.ItemMapData;
+import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.MapDataList;
 
 import java.lang.reflect.Field;
