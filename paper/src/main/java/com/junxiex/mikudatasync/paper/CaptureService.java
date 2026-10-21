@@ -65,6 +65,12 @@ public final class CaptureService {
             if (config.enabled(Segment.PDC)) {
                 segments.put(Segment.PDC, player.getPersistentDataContainer().serializeToBytes());
             }
+            if (config.enabled(Segment.ADVANCEMENTS) && NmsBridge.dataBridgeAvailable()) {
+                segments.put(Segment.ADVANCEMENTS, NmsBridge.captureAdvancements(player));
+            }
+            if (config.enabled(Segment.STATISTICS) && NmsBridge.dataBridgeAvailable()) {
+                segments.put(Segment.STATISTICS, NmsBridge.captureStatistics(player));
+            }
             if (config.enabled(Segment.MISC)) {
                 segments.put(Segment.MISC, miscData(player).encode());
             }

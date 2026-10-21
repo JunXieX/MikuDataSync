@@ -54,6 +54,8 @@ public final class ApplyService {
                 ? decodeItems(envelope.segment(Segment.ENDER_CHEST), 27) : null;
         MiscData misc = envelope.hasSegment(Segment.MISC) ? MiscData.decode(envelope.segment(Segment.MISC)) : null;
         byte[] pdc = envelope.segment(Segment.PDC);
+        byte[] advancements = envelope.segment(Segment.ADVANCEMENTS);
+        byte[] statistics = envelope.segment(Segment.STATISTICS);
 
         if (core != null) {
             player.setGameMode(GameMode.valueOf(core.gameMode()));
@@ -116,6 +118,12 @@ public final class ApplyService {
         }
         if (misc != null && misc.hasCursorItem()) {
             NmsBridge.setCarriedItem(player, ItemStack.deserializeBytes(misc.cursorItem()));
+        }
+        if (advancements != null) {
+            NmsBridge.applyAdvancements(player, advancements, config.advancementStrict());
+        }
+        if (statistics != null) {
+            NmsBridge.applyStatistics(player, statistics);
         }
         player.updateInventory();
     }
