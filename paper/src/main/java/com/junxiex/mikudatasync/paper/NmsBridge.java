@@ -6,6 +6,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
 import org.bukkit.advancement.Advancement;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemMeta;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapView;
@@ -409,43 +410,92 @@ public final class NmsBridge {
         if (!mapsAvailable || player == null) {
             return;
         }
-        persistMaps(player.getInventory().getContents(), player.getInventory());
-        persistMaps(player.getEnderChest().getContents(), player.getEnderChest());
+        persistMaps(player, player.getInventory().getContents(), player.getInventory());
+        persistMaps(player, player.getEnderChest().getContents(), player.getEnderChest());
     }
 
-    private static void persistMaps(ItemStack[] items, org.bukkit.inventory.Inventory inventory) {
+    private static void persistMaps(Player player, ItemStack[] items, org.bukkit.inventory.Inventory inventory) {
         for (int i = 0; i < items.length; i++) {
             ItemStack item = items[i];
-            if (item == null || item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
+            if (item == null || item.getType().isAir()) {
                 continue;
             }
-            if (meta.getPersistentDataContainer().has(MAP_ITEM_KEY, org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) {
                 continue;
             }
+            if (meta instanceof MapMeta mapMeta && mapMeta.hasMapId()) {
+                persistSingleMap(player, item, mapMeta, inventory, i);
+            } else if (meta instanceof org.bukkit.inventory.meta.BlockStateMeta blockState
+                    && blockState.getBlockState() instanceof org.bukkit.block.Container container
+                    && !container.getInventory().isEmpty()) {
+                persistMaps(player, container.getInventory().getContents(), container.getInventory());
+                blockState.setBlockState(container);
+                item.setItemMeta(blockState);
+                inventory.setItem(i, item);
+            } else if (meta instanceof org.bukkit.inventory.meta.BundleMeta bundle && bundle.hasItems()) {
+                ItemStack[] nested = bundle.getItems().toArray(ItemStack[]::new);
+                persistMaps(player, nested, null);
+                bundle.setItems(java.util.List.of(nested));
+                item.setItemMeta(bundle);
+                inventory.setItem(i, item);
+            }
+        }
+    }
+
+    private static void persistSingleMap(Player player, ItemStack item, MapMeta meta,
+                                         org.bukkit.inventory.Inventory inventory, int slot) {
+        if (meta.getPersistentDataContainer().has(MAP_ITEM_KEY, org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+            return;
+        }
+        MapView view = Bukkit.getMap(meta.getMapId());
+        if (view == null) {
+            return;
+        }
+        try {
+            CapturingCanvas canvas = new CapturingCanvas(view);
+            for (org.bukkit.map.MapRenderer renderer : view.getRenderers()) {
+                renderer.render(view, canvas, player);
+            }
+            byte[] colors = canvas.pixels();
+            java.util.List<ItemMapData.CursorData> cursors = new ArrayList<>();
+            org.bukkit.map.MapCursorCollection collection = canvas.cursors();
+            for (int c = 0; c < collection.size(); c++) {
+                org.bukkit.map.MapCursor cursor = collection.getCursor(c);
+                String caption = cursor.caption() == null ? null
+                        : net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                        .serialize(cursor.caption());
+                cursors.add(new ItemMapData.CursorData(cursor.getX(), cursor.getY(), cursor.getDirection(),
+                        cursor.getType().name(), caption));
+            }
+            byte scale = (byte) view.getScale().ordinal();
+            int centerX = 0;
+            int centerZ = 0;
+            boolean locked = view.isLocked();
             try {
                 Object data = mapDataFor(inventory, meta.getMapId());
-                if (data == null) {
-                    continue;
+                if (data != null) {
+                    scale = (byte) mapScaleField.get(data);
+                    centerX = (int) mapCenterXField.get(data);
+                    centerZ = (int) mapCenterZField.get(data);
+                    locked = (boolean) mapLockedField.get(data);
                 }
-                byte[] colors = (byte[]) mapColorsField.get(data);
-                if (colors == null || colors.length != MapDataList.COLORS_LENGTH) {
-                    continue;
-                }
-                ItemMapData persisted = new ItemMapData(mapServerId, meta.getMapId(),
-                        (byte) mapScaleField.get(data), (int) mapCenterXField.get(data),
-                        (int) mapCenterZField.get(data), (boolean) mapLockedField.get(data), colors.clone());
-                meta.getPersistentDataContainer().set(MAP_ITEM_KEY,
-                        org.bukkit.persistence.PersistentDataType.BYTE_ARRAY, persisted.encode());
-                item.setItemMeta(meta);
-                inventory.setItem(i, item);
             } catch (Throwable ignored) {
             }
+            ItemMapData persisted = new ItemMapData(mapServerId, meta.getMapId(), scale, centerX, centerZ,
+                    locked, colors.clone(), java.util.List.copyOf(cursors));
+            meta.getPersistentDataContainer().set(MAP_ITEM_KEY,
+                    org.bukkit.persistence.PersistentDataType.BYTE_ARRAY, persisted.encode());
+            item.setItemMeta(meta);
+            if (inventory != null) {
+                inventory.setItem(slot, item);
+            }
+        } catch (Throwable ignored) {
         }
     }
 
     private static Object mapDataFor(org.bukkit.inventory.Inventory inventory, int id) {
         try {
-            // Maps are stored per world; use the first world whose map index knows the id.
             for (org.bukkit.World world : Bukkit.getWorlds()) {
                 Object data = mapData(world, id);
                 if (data != null) {
@@ -480,45 +530,67 @@ public final class NmsBridge {
                                       java.util.Map<Integer, MapDataList.Entry> fallback) {
         for (int i = 0; i < items.length; i++) {
             ItemStack item = items[i];
-            if (item == null || item.getType().isAir() || !(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
+            if (item == null || item.getType().isAir()) {
                 continue;
             }
-            try {
-                ItemMapData persisted = readItemMap(meta);
-                if (persisted == null) {
-                    MapDataList.Entry entry = fallback.get(meta.getMapId());
-                    if (entry == null) {
-                        continue;
-                    }
-                    persisted = new ItemMapData(mapServerId, entry.mapId(), entry.scale(),
-                            entry.centerX(), entry.centerZ(), entry.locked(), entry.colors().clone());
-                }
-                String key = persisted.originServer() + "#" + persisted.sourceMapId();
-                int targetId = mapBindings == null ? -1 : mapBindings.get(persisted.originServer(), persisted.sourceMapId());
-                MapView view = targetId >= 0 ? Bukkit.getMap(targetId) : null;
-                if (view == null) {
-                    view = Bukkit.createMap(Bukkit.getWorlds().get(0));
-                    view.getRenderers().clear();
-                    view.addRenderer(new MdsMapRenderer(persisted.colors()));
-                    view.setLocked(true);
-                    view.setScale(MapView.Scale.values()[Math.max(0, Math.min(4, persisted.scale()))]);
-                    view.setTrackingPosition(false);
-                    view.setUnlimitedTracking(false);
-                    if (mapBindings != null) {
-                        mapBindings.put(persisted.originServer(), persisted.sourceMapId(), view.getId());
-                    }
-                } else {
-                    view.getRenderers().clear();
-                    view.addRenderer(new MdsMapRenderer(persisted.colors()));
-                    view.setLocked(true);
-                }
-                meta.setMapId(view.getId());
-                meta.getPersistentDataContainer().set(MAP_ITEM_KEY,
-                        org.bukkit.persistence.PersistentDataType.BYTE_ARRAY, persisted.encode());
-                item.setItemMeta(meta);
-                inventory.setItem(i, item);
-            } catch (Throwable ignored) {
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) {
+                continue;
             }
+            if (meta instanceof MapMeta mapMeta && mapMeta.hasMapId()) {
+                applySingleMap(item, mapMeta, inventory, i, fallback);
+            } else if (meta instanceof org.bukkit.inventory.meta.BlockStateMeta blockState
+                    && blockState.getBlockState() instanceof org.bukkit.block.Container container
+                    && !container.getInventory().isEmpty()) {
+                applyItemMaps(player, container.getInventory().getContents(), container.getInventory(), fallback);
+                blockState.setBlockState(container);
+                item.setItemMeta(blockState);
+                inventory.setItem(i, item);
+            } else if (meta instanceof org.bukkit.inventory.meta.BundleMeta bundle && bundle.hasItems()) {
+                ItemStack[] nested = bundle.getItems().toArray(ItemStack[]::new);
+                applyItemMaps(player, nested, null, fallback);
+                bundle.setItems(java.util.List.of(nested));
+                item.setItemMeta(bundle);
+                inventory.setItem(i, item);
+            }
+        }
+    }
+
+    private static void applySingleMap(ItemStack item, MapMeta meta, org.bukkit.inventory.Inventory inventory,
+                                       int slot, java.util.Map<Integer, MapDataList.Entry> fallback) {
+        try {
+            ItemMapData persisted = readItemMap(meta);
+            if (persisted == null) {
+                MapDataList.Entry entry = fallback.get(meta.getMapId());
+                if (entry == null) {
+                    return;
+                }
+                persisted = new ItemMapData(mapServerId, entry.mapId(), entry.scale(),
+                        entry.centerX(), entry.centerZ(), entry.locked(), entry.colors().clone());
+            }
+            int targetId = mapBindings == null ? -1
+                    : mapBindings.get(persisted.originServer(), persisted.sourceMapId());
+            MapView view = targetId >= 0 ? Bukkit.getMap(targetId) : null;
+            if (view == null) {
+                view = Bukkit.createMap(Bukkit.getWorlds().get(0));
+                if (mapBindings != null) {
+                    mapBindings.put(persisted.originServer(), persisted.sourceMapId(), view.getId());
+                }
+            }
+            view.getRenderers().clear();
+            view.addRenderer(new MdsMapRenderer(persisted.colors(), persisted.cursors()));
+            view.setLocked(true);
+            view.setScale(MapView.Scale.values()[Math.max(0, Math.min(4, persisted.scale()))]);
+            view.setTrackingPosition(false);
+            view.setUnlimitedTracking(false);
+            meta.setMapId(view.getId());
+            meta.getPersistentDataContainer().set(MAP_ITEM_KEY,
+                    org.bukkit.persistence.PersistentDataType.BYTE_ARRAY, persisted.encode());
+            item.setItemMeta(meta);
+            if (inventory != null) {
+                inventory.setItem(slot, item);
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -549,386 +621,3 @@ public final class NmsBridge {
             containerMenuField = findField(serverPlayer, "containerMenu");
             Class<?> menuClass = containerMenuField.getType();
             menuGetCarried = menuClass.getMethod("getCarried");
-            menuSetCarried = menuClass.getMethod("setCarried", nmsItemStack);
-            craftAsBukkitCopy = craftItemStack.getMethod("asBukkitCopy", itemInstance);
-            craftAsNMSCopy = craftItemStack.getMethod("asNMSCopy", ItemStack.class);
-            nmsEmptyStack = nmsItemStack.getField("EMPTY").get(null);
-            cursorAvailable = true;
-            logger.info("NMS cursor bridge ready");
-        } catch (Throwable t) {
-            cursorAvailable = false;
-            logger.warning("NMS cursor bridge unavailable: " + t);
-        }
-    }
-
-    public static ItemStack getCarriedItem(Player player) {
-        if (!cursorAvailable) {
-            return null;
-        }
-        try {
-            Object handle = craftGetHandle.invoke(player);
-            Object menu = containerMenuField.get(handle);
-            Object carried = menuGetCarried.invoke(menu);
-            return (ItemStack) craftAsBukkitCopy.invoke(null, carried);
-        } catch (Throwable t) {
-            logger.fine("Failed to read cursor item: " + t);
-            return null;
-        }
-    }
-
-    public static void setCarriedItem(Player player, ItemStack item) {
-        if (!cursorAvailable) {
-            return;
-        }
-        try {
-            Object handle = craftGetHandle.invoke(player);
-            Object menu = containerMenuField.get(handle);
-            // AbstractContainerMenu.carried must never be null in NMS; null causes an NPE on menu tick/close.
-            Object nmsItem = item == null ? nmsEmptyStack : craftAsNMSCopy.invoke(null, item);
-            menuSetCarried.invoke(menu, nmsItem);
-        } catch (Throwable t) {
-            logger.fine("Failed to restore cursor item: " + t);
-        }
-    }
-
-    // ------------------------------------------------------- statistics
-
-    public static byte[] captureStatistics(Player player) {
-        if (!dataAvailable) {
-            return null;
-        }
-        try {
-            Object handle = craftGetHandle.invoke(player);
-            Object counter = serverPlayerStatsField.get(handle);
-            Object mapRaw = statsCounterStatsField.get(counter);
-            if (!(mapRaw instanceof Map<?, ?> map)) {
-                return StatisticsList.encode(List.of());
-            }
-            List<StatisticsList.Entry> entries = new ArrayList<>(map.size());
-            for (Map.Entry<?, ?> mapEntry : map.entrySet()) {
-                Object stat = mapEntry.getKey();
-                Object value = mapEntry.getValue();
-                if (!(value instanceof Number number) || number.intValue() <= 0) {
-                    continue;
-                }
-                Object type = statGetType.invoke(stat);
-                Object statValue = statGetValue.invoke(stat);
-                Object typeId = registryGetKey.invoke(statTypeRegistry, type);
-                if (typeId == null) {
-                    continue;
-                }
-                String valueKey = null;
-                if (type == statsCustomType) {
-                    valueKey = String.valueOf(statValue);
-                } else {
-                    Object registry = statTypeRegistries.get(type);
-                    if (registry != null && statValue != null) {
-                        Object valueId = registryGetKey.invoke(registry, statValue);
-                        if (valueId != null) {
-                            valueKey = valueId.toString();
-                        }
-                    }
-                }
-                entries.add(new StatisticsList.Entry(typeId.toString(), valueKey, number.intValue()));
-            }
-            return StatisticsList.encode(entries);
-        } catch (Throwable t) {
-            logger.warning("Failed to capture statistics: " + t);
-            return null;
-        }
-    }
-
-    public static void applyStatistics(Player player, byte[] payload) throws Exception {
-        if (!dataAvailable) {
-            return;
-        }
-        Object handle = craftGetHandle.invoke(player);
-        Object counter = serverPlayerStatsField.get(handle);
-        Object existingRaw = statsCounterStatsField.get(counter);
-        Map<?, ?> existingStats = existingRaw instanceof Map<?, ?> map ? map : null;
-        if (existingStats != null) {
-            for (Object stat : new ArrayList<>(existingStats.keySet())) {
-                Object current = existingStats.get(stat);
-                if (current instanceof Number number && number.intValue() == 0) {
-                    continue;
-                }
-                try {
-                    statsCounterSetValue.invoke(counter, handle, stat, 0);
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        for (StatisticsList.Entry entry : StatisticsList.decode(payload)) {
-            Object statType = registryGetValue.invoke(statTypeRegistry, identifier(entry.statTypeKey()));
-            if (statType == null) {
-                continue;
-            }
-            Object value;
-            if (statType == statsCustomType) {
-                // Custom stat values are Identifier instances registered in CUSTOM_STAT; use the
-                // canonical instance, otherwise Registry#getKey returns null and Stat construction NPEs.
-                value = registryGetValue.invoke(customStatRegistry, identifier(entry.valueKey()));
-            } else {
-                Object registry = statTypeRegistries.get(statType);
-                if (registry == null || entry.valueKey() == null) {
-                    continue;
-                }
-                value = registryGetValue.invoke(registry, identifier(entry.valueKey()));
-            }
-            if (value == null) {
-                continue;
-            }
-            Object stat = statTypeGet.invoke(statType, value);
-            if (stat == null) {
-                continue;
-            }
-            if (existingStats != null) {
-                Object current = existingStats.get(stat);
-                if (current instanceof Number number && number.intValue() == entry.value()) {
-                    continue;
-                }
-            }
-            statsCounterSetValue.invoke(counter, handle, stat, entry.value());
-        }
-    }
-
-    // ------------------------------------------------------ advancements
-
-    public static byte[] captureAdvancements(Player player) {
-        if (!dataAvailable) {
-            return null;
-        }
-        try {
-            Object handle = craftGetHandle.invoke(player);
-            Object playerAdvancements = serverPlayerAdvancementsField.get(handle);
-            Object mapRaw = playerAdvancementsProgressField.get(playerAdvancements);
-            if (!(mapRaw instanceof Map<?, ?> map)) {
-                return AdvancementList.encode(List.of());
-            }
-            List<AdvancementList.Entry> entries = new ArrayList<>();
-            for (Map.Entry<?, ?> mapEntry : map.entrySet()) {
-                Object holder = mapEntry.getKey();
-                Object progress = mapEntry.getValue();
-                Object id = advancementHolderId.invoke(holder);
-                if (id == null || progress == null) {
-                    continue;
-                }
-                Object completedRaw = advancementGetCompletedCriteria.invoke(progress);
-                if (!(completedRaw instanceof Iterable<?> completed)) {
-                    continue;
-                }
-                List<String> criteria = new ArrayList<>();
-                for (Object criterion : completed) {
-                    criteria.add(String.valueOf(criterion));
-                }
-                if (!criteria.isEmpty()) {
-                    entries.add(new AdvancementList.Entry(id.toString(), criteria));
-                }
-            }
-            return AdvancementList.encode(entries);
-        } catch (Throwable t) {
-            logger.warning("Failed to capture advancements: " + t);
-            return null;
-        }
-    }
-
-    /**
-     * Writes criteria progress directly. This deliberately avoids Bukkit awardCriteria and the
-     * vanilla award() path, which would re-run advancement rewards (loot/functions/recipes/XP).
-     */
-    public static void applyAdvancements(Player player, byte[] payload, boolean strict) throws Exception {
-        if (!dataAvailable) {
-            return;
-        }
-        Object handle = craftGetHandle.invoke(player);
-        Object playerAdvancements = serverPlayerAdvancementsField.get(handle);
-        List<AdvancementList.Entry> entries = AdvancementList.decode(payload);
-        Set<String> desiredKeys = new HashSet<>();
-        for (AdvancementList.Entry entry : entries) {
-            desiredKeys.add(entry.advancementKey());
-        }
-        for (AdvancementList.Entry entry : entries) {
-            NamespacedKey key = NamespacedKey.fromString(entry.advancementKey());
-            if (key == null) {
-                continue;
-            }
-            Advancement advancement = Bukkit.getAdvancement(key);
-            if (advancement == null) {
-                continue;
-            }
-            Object holder = craftAdvancementHandle(advancement);
-            if (holder == null) {
-                continue;
-            }
-            Object progress = advancementGetOrStartProgress.invoke(playerAdvancements, holder);
-            Set<String> desired = new HashSet<>(entry.criteria());
-            Set<String> completed = new HashSet<>();
-            Object currentRaw = advancementGetCompletedCriteria.invoke(progress);
-            if (currentRaw instanceof Iterable<?> current) {
-                for (Object criterion : current) {
-                    completed.add(String.valueOf(criterion));
-                }
-            }
-            if (strict) {
-                for (String criterion : completed) {
-                    if (!desired.contains(criterion)) {
-                        advancementRevokeProgress.invoke(progress, criterion);
-                    }
-                }
-            }
-            for (String criterion : desired) {
-                if (completed.contains(criterion)) {
-                    continue;
-                }
-                try {
-                    advancementGrantProgress.invoke(progress, criterion);
-                } catch (Throwable ignored) {
-                    // Criterion no longer exists (datapack change) - skip it.
-                }
-            }
-        }
-        if (strict) {
-            // Revoke progress that exists only on the target server, so the snapshot is authoritative.
-            Object mapRaw = playerAdvancementsProgressField.get(playerAdvancements);
-            if (mapRaw instanceof Map<?, ?> map) {
-                for (Map.Entry<?, ?> mapEntry : new ArrayList<>(map.entrySet())) {
-                    Object holder = mapEntry.getKey();
-                    Object progress = mapEntry.getValue();
-                    Object id = advancementHolderId.invoke(holder);
-                    if (id == null || desiredKeys.contains(id.toString()) || progress == null) {
-                        continue;
-                    }
-                    Object completedRaw = advancementGetCompletedCriteria.invoke(progress);
-                    if (completedRaw instanceof Iterable<?> completed) {
-                        List<String> revoke = new ArrayList<>();
-                        for (Object criterion : completed) {
-                            revoke.add(String.valueOf(criterion));
-                        }
-                        for (String criterion : revoke) {
-                            advancementRevokeProgress.invoke(progress, criterion);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private static Object craftAdvancementHandle(Advancement advancement) {
-        try {
-            if (craftAdvancementGetHandle == null) {
-                craftAdvancementGetHandle = advancement.getClass().getMethod("getHandle");
-                craftAdvancementGetHandle.setAccessible(true);
-            }
-            return craftAdvancementGetHandle.invoke(advancement);
-        } catch (Throwable t) {
-            logger.fine("CraftAdvancement#getHandle unavailable: " + t);
-            return null;
-        }
-    }
-
-    // ----------------------------------------------------------- reflection
-
-    private static void initializeDataBridge() {
-        try {
-            Class<?> serverPlayer = Class.forName("net.minecraft.server.level.ServerPlayer");
-            Class<?> playerClass = Class.forName("net.minecraft.world.entity.player.Player");
-            Class<?> statClass = Class.forName("net.minecraft.stats.Stat");
-            Class<?> statTypeClass = Class.forName("net.minecraft.stats.StatType");
-            Class<?> statsCounterClass = Class.forName("net.minecraft.stats.ServerStatsCounter");
-            Class<?> statsClass = Class.forName("net.minecraft.stats.Stats");
-            Class<?> builtInRegistries = Class.forName("net.minecraft.core.registries.BuiltInRegistries");
-            Class<?> registryClass = Class.forName("net.minecraft.core.Registry");
-            identifierClass = Class.forName("net.minecraft.resources.Identifier");
-
-            serverPlayerStatsField = findField(serverPlayer, "stats");
-            serverPlayerAdvancementsField = findField(serverPlayer, "advancements");
-            statsCounterStatsField = findField(statsCounterClass, "stats");
-            statsCounterSetValue = statsCounterClass.getMethod("setValue", playerClass, statClass, int.class);
-            statGetType = statClass.getMethod("getType");
-            statGetValue = statClass.getMethod("getValue");
-            statTypeGet = statTypeClass.getMethod("get", Object.class);
-            registryGetKey = registryClass.getMethod("getKey", Object.class);
-            registryGetValue = registryClass.getMethod("getValue", identifierClass);
-            identifierParse = resolveIdentifierParse();
-
-            statTypeRegistry = staticField(builtInRegistries, "STAT_TYPE");
-            customStatRegistry = staticField(builtInRegistries, "CUSTOM_STAT");
-            statsCustomType = staticField(statsClass, "CUSTOM");
-            addStatType(statsClass, builtInRegistries, "ITEM_USED", "ITEM");
-            addStatType(statsClass, builtInRegistries, "ITEM_BROKEN", "ITEM");
-            addStatType(statsClass, builtInRegistries, "ITEM_CRAFTED", "ITEM");
-            addStatType(statsClass, builtInRegistries, "ITEM_PICKED_UP", "ITEM");
-            addStatType(statsClass, builtInRegistries, "ITEM_DROPPED", "ITEM");
-            addStatType(statsClass, builtInRegistries, "BLOCK_MINED", "BLOCK");
-            addStatType(statsClass, builtInRegistries, "ENTITY_KILLED", "ENTITY_TYPE");
-            addStatType(statsClass, builtInRegistries, "ENTITY_KILLED_BY", "ENTITY_TYPE");
-
-            Class<?> playerAdvancementsClass = Class.forName("net.minecraft.server.PlayerAdvancements");
-            Class<?> advancementHolderClass = Class.forName("net.minecraft.advancements.AdvancementHolder");
-            Class<?> advancementProgressClass = Class.forName("net.minecraft.advancements.AdvancementProgress");
-            playerAdvancementsProgressField = findField(playerAdvancementsClass, "progress");
-            advancementHolderId = advancementHolderClass.getMethod("id");
-            advancementGetCompletedCriteria = advancementProgressClass.getMethod("getCompletedCriteria");
-            advancementGrantProgress = advancementProgressClass.getMethod("grantProgress", String.class);
-            advancementRevokeProgress = advancementProgressClass.getMethod("revokeProgress", String.class);
-            advancementGetOrStartProgress = playerAdvancementsClass.getMethod("getOrStartProgress", advancementHolderClass);
-
-            dataAvailable = true;
-            logger.info("NMS statistics/advancement bridge ready");
-        } catch (Throwable t) {
-            dataAvailable = false;
-            logger.warning("NMS statistics/advancement bridge unavailable: " + t);
-        }
-    }
-
-    private static void addStatType(Class<?> statsClass, Class<?> builtInRegistries, String typeField, String registryField) {
-        try {
-            Object type = staticField(statsClass, typeField);
-            Object registry = staticField(builtInRegistries, registryField);
-            if (type != null && registry != null) {
-                statTypeRegistries.put(type, registry);
-            }
-        } catch (Throwable t) {
-            logger.fine("Stat type " + typeField + " unavailable: " + t);
-        }
-    }
-
-    private static Object staticField(Class<?> type, String name) throws Exception {
-        Field field = type.getField(name);
-        return field.get(null);
-    }
-
-    private static Method resolveIdentifierParse() {
-        for (String name : new String[] {"parse", "tryParse"}) {
-            try {
-                return identifierClass.getMethod(name, String.class);
-            } catch (NoSuchMethodException ignored) {
-            }
-        }
-        logger.fine("Identifier#parse unavailable; using constructor fallback");
-        return null;
-    }
-
-    private static Object identifier(String value) throws Exception {
-        if (value == null) {
-            return null;
-        }
-        if (identifierParse != null) {
-            return identifierParse.invoke(null, value);
-        }
-        return identifierClass.getConstructor(String.class).newInstance(value);
-    }
-
-    private static Field findField(Class<?> type, String name) throws NoSuchFieldException {
-        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
-            try {
-                Field field = current.getDeclaredField(name);
-                field.setAccessible(true);
-                return field;
-            } catch (NoSuchFieldException ignored) {
-                // continue with superclass
-            }
-        }
-        throw new NoSuchFieldException(type.getName() + "#" + name);
-    }
-}

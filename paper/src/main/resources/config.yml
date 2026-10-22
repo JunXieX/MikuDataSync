@@ -18,7 +18,7 @@ sync:
     game-mode: true
     flight: true
     attributes: true
-    maps: false
+    maps: true
     pdc: true
     cursor-item: true
   pdc-merge: false
