@@ -621,3 +621,386 @@ public final class NmsBridge {
             containerMenuField = findField(serverPlayer, "containerMenu");
             Class<?> menuClass = containerMenuField.getType();
             menuGetCarried = menuClass.getMethod("getCarried");
+            menuSetCarried = menuClass.getMethod("setCarried", nmsItemStack);
+            craftAsBukkitCopy = craftItemStack.getMethod("asBukkitCopy", itemInstance);
+            craftAsNMSCopy = craftItemStack.getMethod("asNMSCopy", ItemStack.class);
+            nmsEmptyStack = nmsItemStack.getField("EMPTY").get(null);
+            cursorAvailable = true;
+            logger.info("NMS cursor bridge ready");
+        } catch (Throwable t) {
+            cursorAvailable = false;
+            logger.warning("NMS cursor bridge unavailable: " + t);
+        }
+    }
+
+    public static ItemStack getCarriedItem(Player player) {
+        if (!cursorAvailable) {
+            return null;
+        }
+        try {
+            Object handle = craftGetHandle.invoke(player);
+            Object menu = containerMenuField.get(handle);
+            Object carried = menuGetCarried.invoke(menu);
+            return (ItemStack) craftAsBukkitCopy.invoke(null, carried);
+        } catch (Throwable t) {
+            logger.fine("Failed to read cursor item: " + t);
+            return null;
+        }
+    }
+
+    public static void setCarriedItem(Player player, ItemStack item) {
+        if (!cursorAvailable) {
+            return;
+        }
+        try {
+            Object handle = craftGetHandle.invoke(player);
+            Object menu = containerMenuField.get(handle);
+            // AbstractContainerMenu.carried must never be null in NMS; null causes an NPE on menu tick/close.
+            Object nmsItem = item == null ? nmsEmptyStack : craftAsNMSCopy.invoke(null, item);
+            menuSetCarried.invoke(menu, nmsItem);
+        } catch (Throwable t) {
+            logger.fine("Failed to restore cursor item: " + t);
+        }
+    }
+
+    // ------------------------------------------------------- statistics
+
+    public static byte[] captureStatistics(Player player) {
+        if (!dataAvailable) {
+            return null;
+        }
+        try {
+            Object handle = craftGetHandle.invoke(player);
+            Object counter = serverPlayerStatsField.get(handle);
+            Object mapRaw = statsCounterStatsField.get(counter);
+            if (!(mapRaw instanceof Map<?, ?> map)) {
+                return StatisticsList.encode(List.of());
+            }
+            List<StatisticsList.Entry> entries = new ArrayList<>(map.size());
+            for (Map.Entry<?, ?> mapEntry : map.entrySet()) {
+                Object stat = mapEntry.getKey();
+                Object value = mapEntry.getValue();
+                if (!(value instanceof Number number) || number.intValue() <= 0) {
+                    continue;
+                }
+                Object type = statGetType.invoke(stat);
+                Object statValue = statGetValue.invoke(stat);
+                Object typeId = registryGetKey.invoke(statTypeRegistry, type);
+                if (typeId == null) {
+                    continue;
+                }
+                String valueKey = null;
+                if (type == statsCustomType) {
+                    valueKey = String.valueOf(statValue);
+                } else {
+                    Object registry = statTypeRegistries.get(type);
+                    if (registry != null && statValue != null) {
+                        Object valueId = registryGetKey.invoke(registry, statValue);
+                        if (valueId != null) {
+                            valueKey = valueId.toString();
+                        }
+                    }
+                }
+                entries.add(new StatisticsList.Entry(typeId.toString(), valueKey, number.intValue()));
+            }
+            return StatisticsList.encode(entries);
+        } catch (Throwable t) {
+            logger.warning("Failed to capture statistics: " + t);
+            return null;
+        }
+    }
+
+    public static void applyStatistics(Player player, byte[] payload) throws Exception {
+        if (!dataAvailable) {
+            return;
+        }
+        Object handle = craftGetHandle.invoke(player);
+        Object counter = serverPlayerStatsField.get(handle);
+        Object existingRaw = statsCounterStatsField.get(counter);
+        Map<?, ?> existingStats = existingRaw instanceof Map<?, ?> map ? map : null;
+        if (existingStats != null) {
+            for (Object stat : new ArrayList<>(existingStats.keySet())) {
+                Object current = existingStats.get(stat);
+                if (current instanceof Number number && number.intValue() == 0) {
+                    continue;
+                }
+                try {
+                    statsCounterSetValue.invoke(counter, handle, stat, 0);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        for (StatisticsList.Entry entry : StatisticsList.decode(payload)) {
+            Object statType = registryGetValue.invoke(statTypeRegistry, identifier(entry.statTypeKey()));
+            if (statType == null) {
+                continue;
+            }
+            Object value;
+            if (statType == statsCustomType) {
+                // Custom stat values are Identifier instances registered in CUSTOM_STAT; use the
+                // canonical instance, otherwise Registry#getKey returns null and Stat construction NPEs.
+                value = registryGetValue.invoke(customStatRegistry, identifier(entry.valueKey()));
+            } else {
+                Object registry = statTypeRegistries.get(statType);
+                if (registry == null || entry.valueKey() == null) {
+                    continue;
+                }
+                value = registryGetValue.invoke(registry, identifier(entry.valueKey()));
+            }
+            if (value == null) {
+                continue;
+            }
+            Object stat = statTypeGet.invoke(statType, value);
+            if (stat == null) {
+                continue;
+            }
+            if (existingStats != null) {
+                Object current = existingStats.get(stat);
+                if (current instanceof Number number && number.intValue() == entry.value()) {
+                    continue;
+                }
+            }
+            statsCounterSetValue.invoke(counter, handle, stat, entry.value());
+        }
+    }
+
+    // ------------------------------------------------------ advancements
+
+    public static byte[] captureAdvancements(Player player) {
+        if (!dataAvailable) {
+            return null;
+        }
+        try {
+            Object handle = craftGetHandle.invoke(player);
+            Object playerAdvancements = serverPlayerAdvancementsField.get(handle);
+            Object mapRaw = playerAdvancementsProgressField.get(playerAdvancements);
+            if (!(mapRaw instanceof Map<?, ?> map)) {
+                return AdvancementList.encode(List.of());
+            }
+            List<AdvancementList.Entry> entries = new ArrayList<>();
+            for (Map.Entry<?, ?> mapEntry : map.entrySet()) {
+                Object holder = mapEntry.getKey();
+                Object progress = mapEntry.getValue();
+                Object id = advancementHolderId.invoke(holder);
+                if (id == null || progress == null) {
+                    continue;
+                }
+                Object completedRaw = advancementGetCompletedCriteria.invoke(progress);
+                if (!(completedRaw instanceof Iterable<?> completed)) {
+                    continue;
+                }
+                List<String> criteria = new ArrayList<>();
+                for (Object criterion : completed) {
+                    criteria.add(String.valueOf(criterion));
+                }
+                if (!criteria.isEmpty()) {
+                    entries.add(new AdvancementList.Entry(id.toString(), criteria));
+                }
+            }
+            return AdvancementList.encode(entries);
+        } catch (Throwable t) {
+            logger.warning("Failed to capture advancements: " + t);
+            return null;
+        }
+    }
+
+    /**
+     * Writes criteria progress directly. This deliberately avoids Bukkit awardCriteria and the
+     * vanilla award() path, which would re-run advancement rewards (loot/functions/recipes/XP).
+     */
+    public static void applyAdvancements(Player player, byte[] payload, boolean strict) throws Exception {
+        if (!dataAvailable) {
+            return;
+        }
+        Object handle = craftGetHandle.invoke(player);
+        Object playerAdvancements = serverPlayerAdvancementsField.get(handle);
+        List<AdvancementList.Entry> entries = AdvancementList.decode(payload);
+        Set<String> desiredKeys = new HashSet<>();
+        for (AdvancementList.Entry entry : entries) {
+            desiredKeys.add(entry.advancementKey());
+        }
+        for (AdvancementList.Entry entry : entries) {
+            NamespacedKey key = NamespacedKey.fromString(entry.advancementKey());
+            if (key == null) {
+                continue;
+            }
+            Advancement advancement = Bukkit.getAdvancement(key);
+            if (advancement == null) {
+                continue;
+            }
+            Object holder = craftAdvancementHandle(advancement);
+            if (holder == null) {
+                continue;
+            }
+            Object progress = advancementGetOrStartProgress.invoke(playerAdvancements, holder);
+            Set<String> desired = new HashSet<>(entry.criteria());
+            Set<String> completed = new HashSet<>();
+            Object currentRaw = advancementGetCompletedCriteria.invoke(progress);
+            if (currentRaw instanceof Iterable<?> current) {
+                for (Object criterion : current) {
+                    completed.add(String.valueOf(criterion));
+                }
+            }
+            if (strict) {
+                for (String criterion : completed) {
+                    if (!desired.contains(criterion)) {
+                        advancementRevokeProgress.invoke(progress, criterion);
+                    }
+                }
+            }
+            for (String criterion : desired) {
+                if (completed.contains(criterion)) {
+                    continue;
+                }
+                try {
+                    advancementGrantProgress.invoke(progress, criterion);
+                } catch (Throwable ignored) {
+                    // Criterion no longer exists (datapack change) - skip it.
+                }
+            }
+        }
+        if (strict) {
+            // Revoke progress that exists only on the target server, so the snapshot is authoritative.
+            Object mapRaw = playerAdvancementsProgressField.get(playerAdvancements);
+            if (mapRaw instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> mapEntry : new ArrayList<>(map.entrySet())) {
+                    Object holder = mapEntry.getKey();
+                    Object progress = mapEntry.getValue();
+                    Object id = advancementHolderId.invoke(holder);
+                    if (id == null || desiredKeys.contains(id.toString()) || progress == null) {
+                        continue;
+                    }
+                    Object completedRaw = advancementGetCompletedCriteria.invoke(progress);
+                    if (completedRaw instanceof Iterable<?> completed) {
+                        List<String> revoke = new ArrayList<>();
+                        for (Object criterion : completed) {
+                            revoke.add(String.valueOf(criterion));
+                        }
+                        for (String criterion : revoke) {
+                            advancementRevokeProgress.invoke(progress, criterion);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static Object craftAdvancementHandle(Advancement advancement) {
+        try {
+            if (craftAdvancementGetHandle == null) {
+                craftAdvancementGetHandle = advancement.getClass().getMethod("getHandle");
+                craftAdvancementGetHandle.setAccessible(true);
+            }
+            return craftAdvancementGetHandle.invoke(advancement);
+        } catch (Throwable t) {
+            logger.fine("CraftAdvancement#getHandle unavailable: " + t);
+            return null;
+        }
+    }
+
+    // ----------------------------------------------------------- reflection
+
+    private static void initializeDataBridge() {
+        try {
+            Class<?> serverPlayer = Class.forName("net.minecraft.server.level.ServerPlayer");
+            Class<?> playerClass = Class.forName("net.minecraft.world.entity.player.Player");
+            Class<?> statClass = Class.forName("net.minecraft.stats.Stat");
+            Class<?> statTypeClass = Class.forName("net.minecraft.stats.StatType");
+            Class<?> statsCounterClass = Class.forName("net.minecraft.stats.ServerStatsCounter");
+            Class<?> statsClass = Class.forName("net.minecraft.stats.Stats");
+            Class<?> builtInRegistries = Class.forName("net.minecraft.core.registries.BuiltInRegistries");
+            Class<?> registryClass = Class.forName("net.minecraft.core.Registry");
+            identifierClass = Class.forName("net.minecraft.resources.Identifier");
+
+            serverPlayerStatsField = findField(serverPlayer, "stats");
+            serverPlayerAdvancementsField = findField(serverPlayer, "advancements");
+            statsCounterStatsField = findField(statsCounterClass, "stats");
+            statsCounterSetValue = statsCounterClass.getMethod("setValue", playerClass, statClass, int.class);
+            statGetType = statClass.getMethod("getType");
+            statGetValue = statClass.getMethod("getValue");
+            statTypeGet = statTypeClass.getMethod("get", Object.class);
+            registryGetKey = registryClass.getMethod("getKey", Object.class);
+            registryGetValue = registryClass.getMethod("getValue", identifierClass);
+            identifierParse = resolveIdentifierParse();
+
+            statTypeRegistry = staticField(builtInRegistries, "STAT_TYPE");
+            customStatRegistry = staticField(builtInRegistries, "CUSTOM_STAT");
+            statsCustomType = staticField(statsClass, "CUSTOM");
+            addStatType(statsClass, builtInRegistries, "ITEM_USED", "ITEM");
+            addStatType(statsClass, builtInRegistries, "ITEM_BROKEN", "ITEM");
+            addStatType(statsClass, builtInRegistries, "ITEM_CRAFTED", "ITEM");
+            addStatType(statsClass, builtInRegistries, "ITEM_PICKED_UP", "ITEM");
+            addStatType(statsClass, builtInRegistries, "ITEM_DROPPED", "ITEM");
+            addStatType(statsClass, builtInRegistries, "BLOCK_MINED", "BLOCK");
+            addStatType(statsClass, builtInRegistries, "ENTITY_KILLED", "ENTITY_TYPE");
+            addStatType(statsClass, builtInRegistries, "ENTITY_KILLED_BY", "ENTITY_TYPE");
+
+            Class<?> playerAdvancementsClass = Class.forName("net.minecraft.server.PlayerAdvancements");
+            Class<?> advancementHolderClass = Class.forName("net.minecraft.advancements.AdvancementHolder");
+            Class<?> advancementProgressClass = Class.forName("net.minecraft.advancements.AdvancementProgress");
+            playerAdvancementsProgressField = findField(playerAdvancementsClass, "progress");
+            advancementHolderId = advancementHolderClass.getMethod("id");
+            advancementGetCompletedCriteria = advancementProgressClass.getMethod("getCompletedCriteria");
+            advancementGrantProgress = advancementProgressClass.getMethod("grantProgress", String.class);
+            advancementRevokeProgress = advancementProgressClass.getMethod("revokeProgress", String.class);
+            advancementGetOrStartProgress = playerAdvancementsClass.getMethod("getOrStartProgress", advancementHolderClass);
+
+            dataAvailable = true;
+            logger.info("NMS statistics/advancement bridge ready");
+        } catch (Throwable t) {
+            dataAvailable = false;
+            logger.warning("NMS statistics/advancement bridge unavailable: " + t);
+        }
+    }
+
+    private static void addStatType(Class<?> statsClass, Class<?> builtInRegistries, String typeField, String registryField) {
+        try {
+            Object type = staticField(statsClass, typeField);
+            Object registry = staticField(builtInRegistries, registryField);
+            if (type != null && registry != null) {
+                statTypeRegistries.put(type, registry);
+            }
+        } catch (Throwable t) {
+            logger.fine("Stat type " + typeField + " unavailable: " + t);
+        }
+    }
+
+    private static Object staticField(Class<?> type, String name) throws Exception {
+        Field field = type.getField(name);
+        return field.get(null);
+    }
+
+    private static Method resolveIdentifierParse() {
+        for (String name : new String[] {"parse", "tryParse"}) {
+            try {
+                return identifierClass.getMethod(name, String.class);
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
+        logger.fine("Identifier#parse unavailable; using constructor fallback");
+        return null;
+    }
+
+    private static Object identifier(String value) throws Exception {
+        if (value == null) {
+            return null;
+        }
+        if (identifierParse != null) {
+            return identifierParse.invoke(null, value);
+        }
+        return identifierClass.getConstructor(String.class).newInstance(value);
+    }
+
+    private static Field findField(Class<?> type, String name) throws NoSuchFieldException {
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            try {
+                Field field = current.getDeclaredField(name);
+                field.setAccessible(true);
+                return field;
+            } catch (NoSuchFieldException ignored) {
+                // continue with superclass
+            }
+        }
+        throw new NoSuchFieldException(type.getName() + "#" + name);
+    }
+}
