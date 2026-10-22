@@ -4,7 +4,7 @@
 
 跨服玩家数据同步插件：玩家在多个 Paper 子服之间切换时，物品栏、末影箱、状态、进度、统计、属性与 PDC 保持连续。插件不依赖任何数据库或外部中间件，由 Velocity 插件充当数据总线、快照存储与切换编排器。
 
-> 正式版 1.4.0，适用于 Paper 26.3 / Velocity 4.3.0 / Java 25。
+> 正式版 1.5.1，适用于 Paper 26.3 / Velocity 4.3.0 / Java 25。
 
 ## 运行要求
 
@@ -53,7 +53,7 @@
 | `sync.prelogin-fetch-timeout-ms` | 500 | 登录前取数超时 |
 | `sync.on-sync-unavailable` | kick | 数据不可用时踢出（推荐）或放行（continue，可能读到旧数据） |
 | `sync.periodic-snapshot-seconds` | 30 | 周期快照间隔 |
-| `sync.sections.maps` | false | 实验性地图颜色同步；Folia 目标服尚不可靠，默认关闭 |
+| `sync.sections.maps` | true | 地图颜色 + cursor 同步（物品 PDC + Renderer）；含潜影盒/Bundle 内地图 |
 | `debug.enabled` | false | 是否启用管理员调试命令 |
 
 ## 命令与权限
@@ -64,9 +64,9 @@
 | `/mds stats` | 查看快照数量、日志大小、fsync 模式 | `mikudatasync.admin` |
 | `/mds doctor` | 自检配置、IPC 与日志状态 | `mikudatasync.admin` |
 | `/mds switch <server>` | 代理端：把执行者切换到指定子服（走同步闸门） | `mikudatasync.admin` |
-| `/mds backup <player>` | 代理端：把玩家最近一次已持久化快照写入备份文件 | `mikudatasync.admin` |
+| `/mds backup <player>` | 代理端：实时采集在线玩家当前数据并写入备份文件 | `mikudatasync.admin` |
 | `/mds backups` | 代理端：列出备份文件 | `mikudatasync.admin` |
-| `/mds restore <player> <file>` | 代理端：在线应用备份快照（会立即覆盖当前数据） | `mikudatasync.admin` |
+| `/mds restore <player> <file>` | 代理端：在线应用备份快照，返回 ACK/NACK（会立即覆盖当前数据） | `mikudatasync.admin` |
 | `/mdsbackend status` | 后端：查看本服 IPC 状态 | `mikudatasync.admin` |
 | `/mdsbackend bench` | 后端：运行一次 codec 微基准（p50/p95） | `mikudatasync.admin` |
 | `/mdsbackend selftest` | 后端：检查 NMS 桥状态并可对执行者做一次采集测试 | `mikudatasync.admin` |
@@ -93,7 +93,7 @@
 - 正常切服/退服不丢数据；代理崩溃最多丢最近的 fsync 窗口（默认 50ms）；后端被强杀最多丢一个周期快照间隔。该窗口是“不依赖数据库”的固有代价。
 - 日志是唯一持久层，请定期备份 `plugins/mikudatasync/data/journal.mds`。
 - 管理员可用 `/mds backup` 生成玩家快照备份；`/mds restore` 仅接受在线玩家，并会立即覆盖其当前数据。
-- 备份使用最近一次已持久化快照；刚获得且尚未触发切服/退出/周期快照的数据可能不在备份中。
+- `/mds backup` 现在会实时采集在线玩家数据；`/mds restore` 会明确返回应用成功或失败。
 
 ## 限制
 
