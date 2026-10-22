@@ -615,6 +615,60 @@ public final class NmsBridge {
         }
     }
 
+    /** Server-side recursive map self-test (no client inventory packet involved). */
+    public static String mapSelfTest(Player player) {
+        try {
+            MapView view = Bukkit.createMap(Bukkit.getWorlds().get(0));
+            byte[] colors = new byte[MapDataList.COLORS_LENGTH];
+            java.util.Arrays.fill(colors, (byte) 7);
+            view.getRenderers().clear();
+            view.addRenderer(new MdsMapRenderer(colors, List.of(
+                    new ItemMapData.CursorData((byte) 10, (byte) 20, (byte) 0, "BANNER_RED", "test"))));
+            view.setLocked(true);
+            ItemStack map = new ItemStack(org.bukkit.Material.FILLED_MAP);
+            MapMeta mapMeta = (MapMeta) map.getItemMeta();
+            mapMeta.setMapId(view.getId());
+            map.setItemMeta(mapMeta);
+            ItemStack shulker = new ItemStack(org.bukkit.Material.SHULKER_BOX);
+            org.bukkit.inventory.meta.BlockStateMeta blockMeta =
+                    (org.bukkit.inventory.meta.BlockStateMeta) shulker.getItemMeta();
+            org.bukkit.block.ShulkerBox box = (org.bukkit.block.ShulkerBox) blockMeta.getBlockState();
+            box.getInventory().setItem(0, map);
+            blockMeta.setBlockState(box);
+            shulker.setItemMeta(blockMeta);
+
+            org.bukkit.inventory.Inventory source = Bukkit.createInventory(null, 27);
+            source.setItem(0, shulker);
+            persistMaps(player, source.getContents(), source);
+            ItemMapData persisted = nestedMap(source.getItem(0));
+            if (persisted == null) {
+                return "recursiveMap FAILED: no persisted data in nested map";
+            }
+            org.bukkit.inventory.Inventory target = Bukkit.createInventory(null, 27);
+            target.setItem(0, source.getItem(0).clone());
+            applyItemMaps(player, target.getContents(), target, new HashMap<>());
+            ItemMapData applied = nestedMap(target.getItem(0));
+            return "recursiveMap ok checksum=" + checksum(persisted.colors())
+                    + " cursors=" + persisted.cursors().size()
+                    + (applied == null ? " apply=missing" : " apply=ok");
+        } catch (Throwable t) {
+            return "recursiveMap FAILED: " + t;
+        }
+    }
+
+    private static ItemMapData nestedMap(ItemStack item) {
+        if (item == null || !(item.getItemMeta() instanceof org.bukkit.inventory.meta.BlockStateMeta blockMeta)
+                || !(blockMeta.getBlockState() instanceof org.bukkit.block.Container container)) {
+            return null;
+        }
+        for (ItemStack nested : container.getInventory().getContents()) {
+            if (nested != null && nested.getItemMeta() instanceof MapMeta mapMeta) {
+                return readItemMap(mapMeta);
+            }
+        }
+        return null;
+    }
+
     private static ItemMapData readItemMap(MapMeta meta) {
         byte[] bytes = meta.getPersistentDataContainer().get(MAP_ITEM_KEY,
                 org.bukkit.persistence.PersistentDataType.BYTE_ARRAY);
