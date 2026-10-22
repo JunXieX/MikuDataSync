@@ -1,6 +1,9 @@
 package com.junxiex.mikudatasync.paper.command;
 
 import com.junxiex.mikudatasync.paper.MikuDataSyncPaper;
+import com.junxiex.mikudatasync.common.ItemMapData;
+import com.junxiex.mikudatasync.common.MapDataList;
+import com.junxiex.mikudatasync.paper.MdsMapRenderer;
 import com.junxiex.mikudatasync.paper.NmsBridge;
 import com.junxiex.mikudatasync.paper.PaperConfig;
 import com.mojang.brigadier.Command;
@@ -14,7 +17,12 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BlockStateMeta;
+import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.MapMeta;
+import org.bukkit.block.ShulkerBox;
+import org.bukkit.map.MapView;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 
@@ -75,6 +83,8 @@ public final class DebugCommand {
                 .then(Commands.literal("map")
                         .then(Commands.literal("info").executes(context -> mapInfo(context.getSource().getSender(), config)))
                         .then(Commands.literal("init").executes(context -> mapInit(context.getSource().getSender(), config)))
+                        .then(Commands.literal("shulker").executes(context -> mapShulker(context.getSource().getSender(), config)))
+                        .then(Commands.literal("inspect").executes(context -> mapInspect(context.getSource().getSender(), config)))
                         .then(Commands.literal("fill")
                                 .then(Commands.argument("value", StringArgumentType.word())
                                         .executes(context -> mapFill(context.getSource().getSender(), config,
@@ -258,6 +268,102 @@ public final class DebugCommand {
             sender.sendMessage(Component.text("stacks/kb must be numbers"));
             return 0;
         }
+    }
+
+    private static int mapShulker(CommandSender sender, PaperConfig config) {
+        if (!enabled(sender, config)) {
+            return 0;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("players only"));
+            return 0;
+        }
+        try {
+            MapView view = org.bukkit.Bukkit.createMap(player.getWorld());
+            byte[] colors = new byte[MapDataList.COLORS_LENGTH];
+            java.util.Arrays.fill(colors, (byte) 7);
+            view.getRenderers().clear();
+            view.addRenderer(new MdsMapRenderer(colors, java.util.List.of(
+                    new ItemMapData.CursorData((byte) 10, (byte) 20, (byte) 0, "BANNER_RED", "test"))));
+            view.setLocked(true);
+            ItemStack map = new ItemStack(Material.FILLED_MAP);
+            MapMeta mapMeta = (MapMeta) map.getItemMeta();
+            if (mapMeta == null) {
+                return 0;
+            }
+            mapMeta.setMapId(view.getId());
+            map.setItemMeta(mapMeta);
+            ItemStack shulker = new ItemStack(Material.SHULKER_BOX);
+            BlockStateMeta blockMeta = (BlockStateMeta) shulker.getItemMeta();
+            if (blockMeta == null || !(blockMeta.getBlockState() instanceof ShulkerBox box)) {
+                return 0;
+            }
+            box.getInventory().setItem(0, map);
+            blockMeta.setBlockState(box);
+            shulker.setItemMeta(blockMeta);
+            player.getInventory().addItem(shulker);
+            sender.sendMessage(Component.text("shulker map created id=" + view.getId()));
+            return Command.SINGLE_SUCCESS;
+        } catch (Exception e) {
+            sender.sendMessage(Component.text("failed: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int mapInspect(CommandSender sender, PaperConfig config) {
+        if (!enabled(sender, config)) {
+            return 0;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("players only"));
+            return 0;
+        }
+        java.util.List<String> lines = new ArrayList<>();
+        inspectMapItems(player.getInventory().getContents(), lines, 0);
+        inspectMapItems(player.getEnderChest().getContents(), lines, 0);
+        sender.sendMessage(Component.text(lines.isEmpty() ? "no maps found" : String.join(" | ", lines)));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static void inspectMapItems(ItemStack[] items, java.util.List<String> out, int depth) {
+        if (items == null) {
+            return;
+        }
+        NamespacedKey key = NamespacedKey.fromString("mikudatasync:map");
+        for (ItemStack item : items) {
+            if (item == null || item.getType().isAir()) {
+                continue;
+            }
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) {
+                continue;
+            }
+            if (meta instanceof MapMeta mapMeta && mapMeta.hasMapId()) {
+                byte[] bytes = meta.getPersistentDataContainer().get(key, PersistentDataType.BYTE_ARRAY);
+                if (bytes == null) {
+                    out.add("depth=" + depth + " id=" + mapMeta.getMapId() + " no-persisted-data");
+                } else {
+                    try {
+                        ItemMapData data = ItemMapData.decode(bytes);
+                        out.add("depth=" + depth + " id=" + mapMeta.getMapId()
+                                + " checksum=" + checksum(data.colors()) + " cursors=" + data.cursors().size());
+                    } catch (Exception e) {
+                        out.add("depth=" + depth + " id=" + mapMeta.getMapId() + " decode-failed");
+                    }
+                }
+            } else if (meta instanceof BlockStateMeta blockMeta
+                    && blockMeta.getBlockState() instanceof org.bukkit.block.Container container) {
+                inspectMapItems(container.getInventory().getContents(), out, depth + 1);
+            } else if (meta instanceof BundleMeta bundle && bundle.hasItems()) {
+                inspectMapItems(bundle.getItems().toArray(ItemStack[]::new), out, depth + 1);
+            }
+        }
+    }
+
+    private static int checksum(byte[] colors) {
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(colors);
+        return (int) crc.getValue();
     }
 
     private static int mapInit(CommandSender sender, PaperConfig config) {
