@@ -458,6 +458,18 @@ public final class NmsBridge {
                 renderer.render(view, canvas, player);
             }
             byte[] colors = canvas.pixels();
+            if (isAllZero(colors)) {
+                try {
+                    Object data = mapDataFor(inventory, meta.getMapId());
+                    if (data != null) {
+                        byte[] nmsColors = (byte[]) mapColorsField.get(data);
+                        if (nmsColors != null && nmsColors.length == colors.length) {
+                            colors = nmsColors.clone();
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
             java.util.List<ItemMapData.CursorData> cursors = new ArrayList<>();
             org.bukkit.map.MapCursorCollection collection = canvas.cursors();
             for (int c = 0; c < collection.size(); c++) {
@@ -492,6 +504,15 @@ public final class NmsBridge {
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    private static boolean isAllZero(byte[] data) {
+        for (byte value : data) {
+            if (value != 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Object mapDataFor(org.bukkit.inventory.Inventory inventory, int id) {

@@ -136,6 +136,21 @@ class CodecCoverageTest {
     }
 
     @Test
+    void itemMapDataWithCursorsRoundTrip() throws Exception {
+        byte[] colors = new byte[MapDataList.COLORS_LENGTH];
+        java.util.Arrays.fill(colors, (byte) 3);
+        var cursors = List.of(new ItemMapData.CursorData((byte) 10, (byte) 20, (byte) 1,
+                "BANNER_RED", "home"));
+        ItemMapData data = new ItemMapData("survival-1", 7, (byte) 2, 100, -200, true, colors, cursors);
+        ItemMapData decoded = ItemMapData.decode(data.encode());
+        assertEquals("survival-1", decoded.originServer());
+        assertEquals(7, decoded.sourceMapId());
+        assertEquals(1, decoded.cursors().size());
+        assertEquals("BANNER_RED", decoded.cursors().get(0).type());
+        assertArrayEquals(colors, decoded.colors());
+    }
+
+    @Test
     void mapDataRoundTrip() throws Exception {
         byte[] colors = new byte[MapDataList.COLORS_LENGTH];
         java.util.Arrays.fill(colors, (byte) 7);
