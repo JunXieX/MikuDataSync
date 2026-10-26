@@ -389,6 +389,9 @@ public final class IpcServer implements AutoCloseable {
                 UUID[] uuid = new UUID[1];
                 SnapshotMessage message = IpcPayloads.readPutRequest(frame.payload(), uuid);
                 long requestId = frame.requestId();
+                // A proxy-initiated flush is registered in pendingRequests; a backend-initiated PUT
+                // (quit/periodic capture) is not and always expects its PUT_OK.
+                boolean proxyInitiated = pendingRequests.containsKey(requestId);
                 // Committing touches the journal (fsync for switch/quit), so it runs on the disk
                 // executor: doing it inline blocked this backend's reader thread, and a slow disk
                 // then delayed every other player's switch on the same backend.
@@ -412,7 +415,7 @@ public final class IpcServer implements AutoCloseable {
                         return;
                     }
                     boolean waiting = pendingRequests.containsKey(requestId);
-                    if (!waiting && "switch".equalsIgnoreCase(message.saveCause())) {
+                    if (proxyInitiated && !waiting) {
                         // The gate already timed out: nobody waits for this answer, but the commit
                         // did land, so the abort path must not restore the cursor item.
                         lateCommits.put(uuid[0], System.currentTimeMillis());
