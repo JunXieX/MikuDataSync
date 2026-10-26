@@ -259,15 +259,41 @@ public final class HandoffManager {
                             + " is carried by the committed switch snapshot");
                 }
             } else {
-                plugin.getLogger().warning("Handoff snapshot for " + uuid + " was not committed: "
-                        + error.getMessage());
-                releaseAfterFailedCommit(uuid);
+                // A timeout does not prove the snapshot was lost: the commit may still land on the
+                // proxy. The item is therefore parked until the proxy's abort tells us whether the
+                // snapshot exists; only an explicit abort decides its fate.
+                plugin.getLogger().warning("Handoff snapshot for " + uuid + " was not confirmed: "
+                        + error.getMessage() + "; waiting for the abort decision");
             }
         });
         // The freeze itself still needs a bounded worst case: a passed gate does not guarantee the
-        // target connection succeeds, and a player must not stay frozen forever.
-        PluginSchedulers.runDelayed(plugin, player, () -> handoff.remove(uuid),
-                () -> handoff.remove(uuid), UNFREEZE_TICKS);
+        // target connection succeeds, and a player must not stay frozen forever. The parked cursor
+        // item is released here when no abort arrived to decide it.
+        PluginSchedulers.runDelayed(plugin, player, () -> {
+            try {
+                handoff.remove(uuid);
+                CompletableFuture<Boolean> pendingCommit = commits.remove(uuid);
+                boolean stored = pendingCommit != null && pendingCommit.getNow(false);
+                Carried leftover = carriedItems.remove(uuid);
+                if (leftover != null && !stored) {
+                    // No commit was confirmed and no abort came, so nothing else carries the item.
+                    if (player.isOnline()) {
+                        returnItemToInventory(player, leftover.item());
+                    } else {
+                        dropInWorld(uuid, leftover);
+                    }
+                }
+            } finally {
+                handoff.remove(uuid);
+            }
+        }, () -> {
+            handoff.remove(uuid);
+            commits.remove(uuid);
+            Carried retired = carriedItems.remove(uuid);
+            if (retired != null) {
+                dropInWorld(uuid, retired);
+            }
+        }, UNFREEZE_TICKS);
     }
 
     private static byte[] error(String message) {

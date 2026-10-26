@@ -220,12 +220,9 @@ public final class IpcClient implements AutoCloseable {
     }
 
     private void onFrame(Frame frame) {
-        // A proxy-issued id arrives back unchanged, so the lookup accepts both the raw id and the
-        // locally namespaced one.
+        // Every frame we send carries the id we registered locally, so a reply always matches the
+        // pending key directly: local ids stay below PROXY_ID_BIT, proxy-issued ones above it.
         CompletableFuture<Frame> future = pending.remove(frame.requestId());
-        if (future == null) {
-            future = pending.remove(frame.requestId() | PROXY_ID_BIT);
-        }
         if (future != null) {
             // An ERROR frame that answers a request must fail it. Treating it as a normal response
             // made a failed snapshot read look like "this player has no snapshot", which silently
