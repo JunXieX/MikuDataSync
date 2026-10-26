@@ -114,7 +114,7 @@ public final class HandoffManager {
         // The abort frame arrives on the IPC reader thread; inventory/menu state belongs to the
         // entity thread. Unfreezing happens inside that task so the player cannot pick up an item
         // and have it silently overwritten by the restore below.
-        PluginSchedulers.runOnEntity(plugin, player, () -> {
+        PluginSchedulers.runOnEntityOrElse(plugin, player, () -> {
             try {
                 if (carried == null) {
                     return;
