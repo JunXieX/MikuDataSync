@@ -44,7 +44,7 @@ class HardeningTest {
     }
 
     @Test
-    void snapshotMessageRejectsOverlongServerId() {
+    void snapshotMessageRejectsOverlongServerId() throws Exception {
         byte[] envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 1, Map.of(Segment.CORE, new byte[] {1}))
                 .encode();
         String tooLong = "s".repeat(Protocol.MAX_SERVER_ID_BYTES + 1);
