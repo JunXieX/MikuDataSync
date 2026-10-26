@@ -51,6 +51,12 @@ public final class IpcClient implements AutoCloseable {
     private final ExecutorService io;
     private final ExecutorService writer;
     private final ScheduledExecutorService timer;
+    /**
+     * High bit that marks an id as issued by the proxy. Local ids stay below it, so the two sources
+     * can never collide in the pending table.
+     */
+    private static final long PROXY_ID_BIT = 1L << 62;
+
     private final AtomicLong requestIds = new AtomicLong();
     private final ConcurrentHashMap<Long, CompletableFuture<Frame>> pending = new ConcurrentHashMap<>();
     private final AtomicReference<State> state = new AtomicReference<>(State.DISCONNECTED);
@@ -214,7 +220,12 @@ public final class IpcClient implements AutoCloseable {
     }
 
     private void onFrame(Frame frame) {
+        // A proxy-issued id arrives back unchanged, so the lookup accepts both the raw id and the
+        // locally namespaced one.
         CompletableFuture<Frame> future = pending.remove(frame.requestId());
+        if (future == null) {
+            future = pending.remove(frame.requestId() | PROXY_ID_BIT);
+        }
         if (future != null) {
             // An ERROR frame that answers a request must fail it. Treating it as a normal response
             // made a failed snapshot read look like "this player has no snapshot", which silently
@@ -254,12 +265,15 @@ public final class IpcClient implements AutoCloseable {
             failed.completeExceptionally(new IOException("IPC is not connected"));
             return failed;
         }
-        long id = requestId != 0L ? requestId : requestIds.incrementAndGet();
+        // Proxy-issued ids and locally generated ids must not share a namespace: both counters start
+        // at 1, so a collision would silently overwrite a waiting future and time that request out.
+        long id = requestId != 0L ? requestId | PROXY_ID_BIT : requestIds.incrementAndGet();
         CompletableFuture<Frame> future = new CompletableFuture<>();
         pending.put(id, future);
         // The frame is registered before it is queued, so the single writer thread keeps request
         // order without the caller thread ever blocking on a socket write.
-        Frame frame = new Frame(opcode, id, payload);
+        // The marker is local bookkeeping only; the proxy must see the id it issued.
+        Frame frame = new Frame(opcode, requestId != 0L ? requestId : id, payload);
         CompletableFuture<Frame> bounded = future.whenComplete((frame1, error) -> pending.remove(id));
         try {
             writer.execute(() -> {
