@@ -231,7 +231,7 @@ public final class IpcServer implements AutoCloseable {
         try {
             diskIo.execute(task);
         } catch (java.util.concurrent.RejectedExecutionException e) {
-            logger.fine("Disk executor is closed; dropping task");
+            logger.debug("Disk executor is closed; dropping task");
         }
     }
 
@@ -242,7 +242,7 @@ public final class IpcServer implements AutoCloseable {
         } catch (java.util.concurrent.RejectedExecutionException e) {
             // The frame cannot be written any more, but the waiting request still has to be settled
             // or it hangs until its own timeout.
-            logger.fine("Worker pool is closed; settling request {} without a reply", requestId);
+            logger.debug("Worker pool is closed; settling request {} without a reply", requestId);
             failPending(requestId, new IOException("proxy is shutting down"));
         }
     }

@@ -301,7 +301,7 @@ public final class JournalStore implements AutoCloseable {
                 try {
                     Files.deleteIfExists(temp);
                 } catch (IOException ignored) {
-                    logger.fine("Could not delete leftover compaction file {}", temp);
+                    logger.debug("Could not delete leftover compaction file {}", temp);
                 }
             }
         }
