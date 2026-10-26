@@ -71,10 +71,16 @@ jobs:
             echo "Release ${GITHUB_REF_NAME} 已存在，跳过发布。"
             exit 0
           fi
+          shopt -s globstar nullglob
+          JARS=(dist/**/*.jar)
+          if [ ${#JARS[@]} -eq 0 ]; then
+            echo "没有找到构建产物" >&2
+            exit 1
+          fi
           NOTES_FILE="$(mktemp)"
           git log -1 --format=%b HEAD > "${NOTES_FILE}"
           if [ -s "${NOTES_FILE}" ]; then
-            gh release create "${GITHUB_REF_NAME}" dist/*.jar \
+            gh release create "${GITHUB_REF_NAME}" "${JARS[@]}" \
               --title "${GITHUB_REF_NAME}" --notes-file "${NOTES_FILE}"
           else
             echo "发版提交正文为空，无法生成更新日志" >&2
