@@ -49,13 +49,17 @@ public final class IpcClient implements AutoCloseable {
     private final Logger logger;
     private final PaperConfig config;
     private final ExecutorService io;
+    private final ExecutorService writer;
     private final ScheduledExecutorService timer;
     private final AtomicLong requestIds = new AtomicLong();
     private final ConcurrentHashMap<Long, CompletableFuture<Frame>> pending = new ConcurrentHashMap<>();
     private final AtomicReference<State> state = new AtomicReference<>(State.DISCONNECTED);
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object writeLock = new Object();
+    private static final java.util.concurrent.ScheduledExecutorService WATCHDOG =
+            Executors.newSingleThreadScheduledExecutor(daemonFactory("mds-ipc-watchdog"));
 
+    private volatile long backoffMs = 1000L;
     private volatile Socket socket;
     private volatile DataInputStream in;
     private volatile DataOutputStream out;
@@ -66,6 +70,9 @@ public final class IpcClient implements AutoCloseable {
         this.logger = plugin.getLogger();
         this.config = config;
         this.io = Executors.newSingleThreadExecutor(daemonFactory("mds-ipc-io"));
+        // Responses (PUT/ACK) are produced on region/entity threads; writing a snapshot frame there
+        // would block that region's tick whenever the proxy socket backs up.
+        this.writer = Executors.newSingleThreadExecutor(daemonFactory("mds-ipc-writer"));
         this.timer = Executors.newSingleThreadScheduledExecutor(daemonFactory("mds-ipc-timer"));
     }
 
@@ -111,20 +118,29 @@ public final class IpcClient implements AutoCloseable {
         }
     }
 
-    public void ack(UUID uuid, long appliedSeq) {
+    /** Waits for queued frames to reach the socket (used during shutdown). */
+    public void drainWrites(long timeoutMs) {
+        java.util.concurrent.CountDownLatch drained = new java.util.concurrent.CountDownLatch(1);
         try {
-            writeFrame(new Frame(Opcode.ACK, 0L, IpcPayloads.ack(uuid, appliedSeq)));
-        } catch (IOException e) {
-            logger.fine("Failed to send ACK: " + e.getMessage());
+            writer.execute(drained::countDown);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            return;
+        }
+        try {
+            drained.await(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
+    public void ack(UUID uuid, long appliedSeq) {
+        respond(0L, Opcode.ACK, IpcPayloads.ack(uuid, appliedSeq));
+    }
+
     private void runLoop() {
-        long backoffMs = 1000L;
         while (!closed.get()) {
             try {
                 connectAndServe();
-                backoffMs = 1000L;
             } catch (Exception e) {
                 if (closed.get()) {
                     return;
@@ -159,10 +175,20 @@ public final class IpcClient implements AutoCloseable {
 
         sendHello(newOut);
         Frame ack = FrameCodec.read(newIn, Protocol.MAX_FRAME_BYTES);
+        if (ack.opcode() == Opcode.ERROR) {
+            // Surface the proxy's reason: a version or secret mismatch otherwise looked like a
+            // generic connection failure and every player was kicked with no clue in the log.
+            throw new IOException("proxy rejected handshake: " + readErrorMessage(ack.payload())
+                    + " (local protocol version " + Protocol.PROTOCOL_VERSION + ")");
+        }
         if (ack.opcode() != Opcode.HELLO_ACK) {
             throw new IOException("unexpected handshake response: " + ack.opcode());
         }
         newSocket.setSoTimeout(0);
+        // Reset the reconnect backoff only once a handshake actually succeeded. Leaving the last
+        // doubled delay in place meant every later disconnect waited a flat 30s, during which
+        // on-sync-unavailable: kick rejected every login on this backend.
+        backoffMs = 1000L;
         state.set(State.CONNECTED);
         logger.info("Connected to proxy IPC at " + config.proxyHost() + ":" + config.proxyPort());
 
@@ -190,6 +216,9 @@ public final class IpcClient implements AutoCloseable {
     private void onFrame(Frame frame) {
         CompletableFuture<Frame> future = pending.remove(frame.requestId());
         if (future != null) {
+            // An ERROR frame that answers a request must fail it. Treating it as a normal response
+            // made a failed snapshot read look like "this player has no snapshot", which silently
+            // let the player join with stale data.
             if (frame.opcode() == Opcode.NACK) {
                 try {
                     NackMessage nack = NackMessage.decode(frame.payload());
@@ -197,6 +226,8 @@ public final class IpcClient implements AutoCloseable {
                 } catch (ProtocolException e) {
                     future.completeExceptionally(e);
                 }
+            } else if (frame.opcode() == Opcode.ERROR) {
+                future.completeExceptionally(new IOException("backend error: " + readErrorMessage(frame.payload())));
             } else {
                 future.complete(frame);
             }
@@ -210,24 +241,49 @@ public final class IpcClient implements AutoCloseable {
     }
 
     private CompletableFuture<Frame> request(Opcode opcode, byte[] payload, long timeoutMs) {
+        return request(opcode, payload, timeoutMs, 0L);
+    }
+
+    /**
+     * Sends a request. When {@code requestId} is non-zero the frame answers an existing proxy request
+     * with that id (used by the handoff path so the proxy can match the commit result).
+     */
+    CompletableFuture<Frame> request(Opcode opcode, byte[] payload, long timeoutMs, long requestId) {
         if (state.get() != State.CONNECTED) {
             CompletableFuture<Frame> failed = new CompletableFuture<>();
             failed.completeExceptionally(new IOException("IPC is not connected"));
             return failed;
         }
-        long requestId = requestIds.incrementAndGet();
+        long id = requestId != 0L ? requestId : requestIds.incrementAndGet();
         CompletableFuture<Frame> future = new CompletableFuture<>();
-        pending.put(requestId, future);
+        pending.put(id, future);
+        // The frame is registered before it is queued, so the single writer thread keeps request
+        // order without the caller thread ever blocking on a socket write.
+        Frame frame = new Frame(opcode, id, payload);
+        CompletableFuture<Frame> bounded = future.whenComplete((frame1, error) -> pending.remove(id));
         try {
-            writeFrame(new Frame(opcode, requestId, payload));
-        } catch (IOException e) {
-            pending.remove(requestId);
-            future.completeExceptionally(e);
-            return future;
+            writer.execute(() -> {
+                try {
+                    writeFrame(frame);
+                } catch (IOException e) {
+                    pending.remove(id);
+                    future.completeExceptionally(e);
+                    return;
+                }
+                // The timeout starts once the frame is on the wire: queuing behind other writes must
+                // not consume the caller's budget (a pre-login GET would otherwise time out unsent).
+                future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS);
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            pending.remove(id);
+            future.completeExceptionally(new IOException("IPC client closed", e));
+            return bounded;
         }
-        return future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-                .whenComplete((frame, error) -> pending.remove(requestId));
+        return bounded;
     }
+
+    /** A single frame write must not hold the writer thread longer than this. */
+    private static final long WRITE_TIMEOUT_MS = 5_000L;
 
     private void writeFrame(Frame frame) throws IOException {
         synchronized (writeLock) {
@@ -235,7 +291,47 @@ public final class IpcClient implements AutoCloseable {
             if (current == null || state.get() != State.CONNECTED) {
                 throw new IOException("IPC is not connected");
             }
-            FrameCodec.write(current, frame);
+            long deadline = System.currentTimeMillis() + WRITE_TIMEOUT_MS;
+            Watchdog watchdog = Watchdog.arm(socket, deadline, logger);
+            try {
+                FrameCodec.write(current, frame);
+            } finally {
+                watchdog.cancel();
+            }
+        }
+    }
+
+    /**
+     * Closes the socket when a single write exceeds its budget. A blocked write cannot be interrupted
+     * otherwise, and the writer thread being stuck would silently stop every ACK and snapshot PUT.
+     */
+    private static final class Watchdog {
+
+        private final java.util.concurrent.ScheduledFuture<?> task;
+
+        private Watchdog(java.util.concurrent.ScheduledFuture<?> task) {
+            this.task = task;
+        }
+
+        private static Watchdog arm(Socket socket, long deadline, Logger logger) {
+            if (socket == null) {
+                return new Watchdog(null);
+            }
+            long delay = Math.max(1L, deadline - System.currentTimeMillis());
+            java.util.concurrent.ScheduledFuture<?> task = WATCHDOG.schedule(() -> {
+                logger.warning("IPC write exceeded " + WRITE_TIMEOUT_MS + "ms; closing the connection");
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                }
+            }, delay, TimeUnit.MILLISECONDS);
+            return new Watchdog(task);
+        }
+
+        private void cancel() {
+            if (task != null) {
+                task.cancel(false);
+            }
         }
     }
 
@@ -245,10 +341,17 @@ public final class IpcClient implements AutoCloseable {
     }
 
     public void respond(long requestId, Opcode opcode, byte[] payload) {
+        Frame frame = new Frame(opcode, requestId, payload);
         try {
-            writeFrame(new Frame(opcode, requestId, payload));
-        } catch (IOException e) {
-            logger.warning("Failed to send IPC response: " + e.getMessage());
+            writer.execute(() -> {
+                try {
+                    writeFrame(frame);
+                } catch (IOException e) {
+                    logger.warning("Failed to send IPC response: " + e.getMessage());
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            logger.fine("IPC writer is closed; dropping " + opcode);
         }
     }
 
@@ -316,6 +419,14 @@ public final class IpcClient implements AutoCloseable {
         closeSocket();
         failPending(new IOException("IPC client closed"));
         timer.shutdownNow();
+        writer.shutdown();
+        try {
+            writer.awaitTermination(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        // No shutdownNow here: interrupting a half-written frame makes the proxy treat the whole
+        // connection as corrupt, and the writer threads are daemons anyway.
         io.shutdownNow();
     }
 }

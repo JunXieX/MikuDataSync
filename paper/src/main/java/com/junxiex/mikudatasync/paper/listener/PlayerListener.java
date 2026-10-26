@@ -14,6 +14,7 @@ import com.junxiex.mikudatasync.paper.PendingSnapshots;
 import com.junxiex.mikudatasync.paper.PluginSchedulers;
 import net.kyori.adventure.text.Component;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -53,8 +54,12 @@ public final class PlayerListener implements Listener {
         this.handoffManager = handoffManager;
     }
 
-    @EventHandler(priority = EventPriority.LOWEST)
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onAsyncPreLogin(AsyncPlayerPreLoginEvent event) {
+        if (event.getLoginResult() != AsyncPlayerPreLoginEvent.Result.ALLOWED) {
+            // Another plugin already refused this login; do not spend an IPC round trip on it.
+            return;
+        }
         if (ipcClient.state() != IpcClient.State.CONNECTED) {
             unavailable(event, "proxy IPC is not connected");
             return;
@@ -63,7 +68,9 @@ public final class PlayerListener implements Listener {
         try {
             SnapshotMessage message = ipcClient
                     .getSnapshot(uuid, config.preloginFetchTimeoutMs())
-                    .get(config.preloginFetchTimeoutMs() + 500L, TimeUnit.MILLISECONDS);
+                    // request() already applies orTimeout; the outer get only guards a stuck
+                    // callback and must not double the login-thread budget.
+                    .get(config.preloginFetchTimeoutMs() + 100L, TimeUnit.MILLISECONDS);
             if (message == null) {
                 return;
             }
@@ -74,7 +81,11 @@ public final class PlayerListener implements Listener {
                 return;
             }
             ApplyService.Prepared prepared = applyService.prepare(envelope);
-            pendingSnapshots.put(uuid, new PendingSnapshots.Pending(envelope, message.seq(), System.currentTimeMillis(), prepared));
+            if (!pendingSnapshots.put(uuid,
+                    new PendingSnapshots.Pending(envelope, message.seq(), System.currentTimeMillis(), prepared))) {
+                // Entering without the snapshot would mean playing on stale data and never ACKing.
+                unavailable(event, "too many pending snapshots");
+            }
         } catch (Exception e) {
             unavailable(event, "failed to fetch snapshot: " + e.getMessage());
         }
@@ -85,17 +96,18 @@ public final class PlayerListener implements Listener {
         Player player = event.getPlayer();
         PendingSnapshots.Pending pending = pendingSnapshots.remove(player.getUniqueId());
         if (pending == null || pending.prepared() == null) {
+            // No snapshot was staged for this join (a brand-new player, or the staged entry was
+            // dropped). Entering with whatever the target server already holds would be a silent
+            // rollback, so it is treated exactly like "sync unavailable".
+            if (pendingSnapshots.takeDropped(player.getUniqueId())) {
+                com.junxiex.mikudatasync.common.Metrics.recordApplyFailure();
+                plugin.getLogger().severe("Snapshot for " + player.getName()
+                        + " was dropped before join (queue full or expired); the player is using local data");
+            }
             return;
         }
         try {
             applyService.apply(player, pending.prepared());
-            PluginSchedulers.runDelayed(plugin, player, () -> {
-                try {
-                    applyService.applyCursor(player, pending.envelope());
-                } catch (Exception e) {
-                    plugin.getLogger().warning("Failed to restore cursor item: " + e.getMessage());
-                }
-            }, 1L);
             ipcClient.ack(player.getUniqueId(), pending.seq());
         } catch (Exception e) {
             Throwable cause = e;
@@ -103,6 +115,7 @@ public final class PlayerListener implements Listener {
                 cause = cause.getCause();
             }
             skipQuitCapture.add(player.getUniqueId());
+            com.junxiex.mikudatasync.common.Metrics.recordApplyFailure();
             plugin.getLogger().log(java.util.logging.Level.SEVERE,
                     "Failed to apply snapshot for " + player.getName(), cause);
             ipcClient.nack(new NackMessage(player.getUniqueId(), pending.seq(), "apply_failed",
@@ -111,17 +124,19 @@ public final class PlayerListener implements Listener {
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
+    // HIGHEST rather than MONITOR: the quit capture and any cursor restore must still run while the
+    // entity is alive, otherwise an addItem can be discarded with the entity.
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onQuit(PlayerQuitEvent event) {
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
         if (skipQuitCapture.remove(uuid)) {
-            pendingSnapshots.remove(uuid);
+            pendingSnapshots.discard(uuid);
             captureService.forget(uuid);
             handoffManager.clear(uuid);
             return;
         }
-        pendingSnapshots.remove(uuid);
+        pendingSnapshots.discard(uuid);
         captureService.forget(uuid);
         if (handoffManager.isHandingOff(uuid)) {
             // The switch flush already persisted the final state; a quit snapshot here could
@@ -129,8 +144,34 @@ public final class PlayerListener implements Listener {
             handoffManager.clear(uuid);
             return;
         }
-        SnapshotMessage message = captureService.capture(player, "quit");
+        // Vanilla drops the menu cursor item into the world when the player disconnects, so the
+        // snapshot would carry a copy while the world keeps another. Take it out of the menu first
+        // and pass it in as the cursor payload, exactly like the switch path does.
+        ItemStack carried = null;
+        if (captureService.capturesCursor()) {
+            carried = NmsBridge.getCarriedItem(player);
+            if (carried != null && !carried.getType().isAir()) {
+                NmsBridge.setCarriedItem(player, null);
+            } else {
+                carried = null;
+            }
+        }
+        SnapshotMessage message = captureService.capture(player, "quit", carried);
         if (message == null) {
+            if (carried != null) {
+                // The snapshot never materialised. The menu is discarded right after quit, so the item
+                // must go into the inventory (dropping the overflow) instead of back onto the cursor.
+                if (player.isOnline()) {
+                    java.util.Map<Integer, ItemStack> leftover = player.getInventory().addItem(carried);
+                    for (ItemStack remaining : leftover.values()) {
+                        player.getWorld().dropItemNaturally(player.getLocation(), remaining);
+                    }
+                } else {
+                    // Already removed: dropping into the world is the only form that is guaranteed
+                    // to be saved with the chunk.
+                    player.getWorld().dropItemNaturally(player.getLocation(), carried);
+                }
+            }
             return;
         }
         PluginSchedulers.runAsync(plugin, () ->

@@ -32,7 +32,7 @@ class SnapshotStoreTest {
     void commitAssignsMonotonicSeqAndDeduplicates() throws Exception {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
-        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
             SnapshotStore store = new SnapshotStore(1 << 20, journal);
             assertEquals(1L, store.commit(uuid, message(1, "switch", (byte) 1)));
             assertEquals(2L, store.commit(uuid, message(2, "switch", (byte) 2)));
@@ -45,7 +45,7 @@ class SnapshotStoreTest {
     void ackIsMonotonicAndEvictRemovesMemoryEntry() throws Exception {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
-        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
             SnapshotStore store = new SnapshotStore(1 << 20, journal);
             store.commit(uuid, message(1, "quit", (byte) 1));
             store.ack(uuid, 5L);
@@ -61,11 +61,11 @@ class SnapshotStoreTest {
     void journalFallbackAfterRestart() throws Exception {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
-        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
             SnapshotStore store = new SnapshotStore(1 << 20, journal);
             store.commit(uuid, message(1, "quit", (byte) 9));
         }
-        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
             SnapshotStore store = new SnapshotStore(1 << 20, journal);
             assertNotNull(store.get(uuid));
             assertEquals(1L, store.get(uuid).seq());
@@ -76,7 +76,7 @@ class SnapshotStoreTest {
     void maxSnapshotBytesIsEnforced() throws Exception {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
-        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
             SnapshotStore store = new SnapshotStore(8, journal);
             assertThrows(ProtocolException.class, () -> store.commit(uuid, message(1, "quit", (byte) 1)));
         }

@@ -4,7 +4,6 @@ import com.junxiex.mikudatasync.common.CodecBench;
 import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.common.StageMetrics;
-import com.junxiex.mikudatasync.common.StageMetrics;
 import com.junxiex.mikudatasync.paper.CaptureService;
 import com.junxiex.mikudatasync.paper.IpcClient;
 import com.junxiex.mikudatasync.paper.MikuDataSyncPaper;
@@ -39,8 +38,15 @@ public final class MdsCommand {
                     return Command.SINGLE_SUCCESS;
                 }))
                 .then(Commands.literal("bench").executes(context -> {
-                    CodecBench.Result result = CodecBench.run(200, 2_000);
-                    context.getSource().getSender().sendMessage(Component.text(CodecBench.describe(result)));
+                    // Runs 2000 full encode+decode rounds over a ~20KB sample; doing that on the
+                    // command thread stalls the whole tick budget, so it goes to the async scheduler.
+                    CommandSender sender = context.getSource().getSender();
+                    sender.sendMessage(Component.text("benchmark running in background..."));
+                    PluginSchedulers.runAsync(plugin, () -> {
+                        CodecBench.Result result = CodecBench.run(200, 2_000);
+                        PluginSchedulers.runOnGlobal(plugin,
+                                () -> sender.sendMessage(Component.text(CodecBench.describe(result))));
+                    });
                     return Command.SINGLE_SUCCESS;
                 }))
                 .then(Commands.literal("selftest").executes(context -> {
@@ -54,7 +60,6 @@ public final class MdsCommand {
                             sender.sendMessage(Component.text(bridges + ", capture="
                                     + (message == null ? "failed" : message.envelope().length + "B")));
                         });
-                        sender.sendMessage(Component.text(bridges + " (capture scheduled)"));
                     } else {
                         sender.sendMessage(Component.text(bridges));
                     }

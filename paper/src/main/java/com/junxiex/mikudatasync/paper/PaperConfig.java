@@ -34,6 +34,16 @@ public record PaperConfig(
         if (serverId.isBlank()) {
             throw new ConfigException("proxy.server-id must not be empty");
         }
+        // The id travels inside SnapshotMessage with a 128-byte UTF-8 limit; a longer id would
+        // encode on the source server but fail to decode everywhere else.
+        int serverIdBytes = serverId.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (serverIdBytes > com.junxiex.mikudatasync.common.Protocol.MAX_SERVER_ID_BYTES) {
+            throw new ConfigException("proxy.server-id is too long: " + serverIdBytes + " bytes (max "
+                    + com.junxiex.mikudatasync.common.Protocol.MAX_SERVER_ID_BYTES + ")");
+        }
+        if (serverId.indexOf('|') >= 0) {
+            throw new ConfigException("proxy.server-id must not contain '|'");
+        }
         if (secret.length() < 16) {
             throw new ConfigException("proxy.secret must be at least 16 characters");
         }
@@ -93,7 +103,9 @@ public record PaperConfig(
                 cfg.getBoolean("sync.pdc-merge", false),
                 cfg.getBoolean("sync.advancement-strict", true),
                 Math.max(5, Math.min(3600, cfg.getInt("sync.periodic-snapshot-seconds", 30))),
-                Math.max(50, Math.min(60_000, cfg.getInt("sync.prelogin-fetch-timeout-ms", 500))),
+                // This timeout blocks the login thread; a large value turns one slow IPC round trip
+                // into a client-side "connection timed out" kick.
+                Math.max(50, Math.min(3_000, cfg.getInt("sync.prelogin-fetch-timeout-ms", 500))),
                 onSyncUnavailable,
                 cfg.getBoolean("debug.log-timings", false),
                 cfg.getBoolean("debug.enabled", false)

@@ -27,7 +27,10 @@ public record VelocityConfig(
         int readTimeoutMs,
         boolean retainOffline,
         int backupsKeep,
-        String commandPermission
+        String commandPermission,
+        long compactionThresholdBytes,
+        long retainOfflineBytes,
+        String warning
 ) {
 
     public enum FsyncMode {
@@ -52,8 +55,9 @@ public record VelocityConfig(
 
         String host = MiniYaml.getString(root, "protocol.bind", "127.0.0.1");
         int port = MiniYaml.getInt(root, "protocol.port", 25666);
-        String secret = MiniYaml.getString(root, "protocol.secret", "");
-        int readTimeoutMs = Math.max(30000, MiniYaml.getInt(root, "protocol.read-timeout-ms", 60000));
+        // Raw read: a numeric secret with leading zeros must not be rewritten into a different value.
+        String secret = MiniYaml.getRawString(root, "protocol.secret", "");
+        int readTimeoutMs = MiniYaml.getInt(root, "protocol.read-timeout-ms", 60000);
 
         String journalFile = MiniYaml.getString(root, "store.journal-file", "data/journal.mds");
         String fsyncModeRaw = MiniYaml.getString(root, "store.fsync-mode", "interval");
@@ -61,12 +65,16 @@ public record VelocityConfig(
         boolean retainOffline = MiniYaml.getBoolean(root, "store.retain-offline-snapshots", false);
 
         int switchTimeoutMs = MiniYaml.getInt(root, "sync.switch-timeout-ms", 1500);
-        int getWaitMs = MiniYaml.getInt(root, "sync.get-wait-ms", 300);
+        // A GET that lands while a switch flush is in flight must wait at least as long as the gate,
+        // otherwise it returns a pre-switch snapshot and the target server applies stale data.
+        int getWaitMs = MiniYaml.getInt(root, "sync.get-wait-ms", 1500);
         String failMode = MiniYaml.getString(root, "sync.fail-mode", "closed");
         int periodicFlushSeconds = Math.max(1, Math.min(3_600, MiniYaml.getInt(root, "sync.periodic-flush-seconds", 30)));
         int maxSnapshotBytes = MiniYaml.getInt(root, "sync.max-snapshot-bytes", Protocol.MAX_SNAPSHOT_BYTES);
         int backupsKeep = Math.max(1, Math.min(1000, MiniYaml.getInt(root, "backups.keep", 20)));
-        String commandPermission = MiniYaml.getString(root, "commands.permission", "");
+        String commandPermission = MiniYaml.getString(root, "commands.permission", "mikudatasync.admin");
+        int compactionThresholdMb = MiniYaml.getInt(root, "store.compaction-threshold-mb", 64);
+        int retainOfflineMb = MiniYaml.getInt(root, "store.retain-offline-budget-mb", 256);
 
         if (secret.length() < 16) {
             throw new ConfigException("protocol.secret must be at least 16 characters");
@@ -80,8 +88,25 @@ public record VelocityConfig(
         if (getWaitMs < 10 || getWaitMs > 60000) {
             throw new ConfigException("sync.get-wait-ms out of range: " + getWaitMs);
         }
+        boolean getWaitAdjusted = false;
+        if (getWaitMs < switchTimeoutMs) {
+            // A GET that gives up before the switch gate does returns the pre-switch snapshot, so the
+            // value is raised instead of rejecting the file: 1.5.x shipped get-wait-ms: 300 and an
+            // upgrade must not refuse to start (that would deny every login on every backend).
+            getWaitMs = switchTimeoutMs;
+            getWaitAdjusted = true;
+        }
         if (switchTimeoutMs < 50 || switchTimeoutMs > 30000) {
             throw new ConfigException("sync.switch-timeout-ms out of range: " + switchTimeoutMs);
+        }
+        if (readTimeoutMs < 1000 || readTimeoutMs > 600_000) {
+            throw new ConfigException("protocol.read-timeout-ms out of range: " + readTimeoutMs);
+        }
+        if (compactionThresholdMb < 1 || compactionThresholdMb > 4096) {
+            throw new ConfigException("store.compaction-threshold-mb out of range: " + compactionThresholdMb);
+        }
+        if (retainOfflineMb < 1 || retainOfflineMb > 16_384) {
+            throw new ConfigException("store.retain-offline-budget-mb out of range: " + retainOfflineMb);
         }
         FsyncMode fsyncMode;
         try {
@@ -93,7 +118,7 @@ public record VelocityConfig(
             throw new ConfigException("sync.fail-mode must be closed, open or kick");
         }
 
-        return new VelocityConfig(
+        VelocityConfig loaded = new VelocityConfig(
                 host,
                 port,
                 secret,
@@ -108,12 +133,24 @@ public record VelocityConfig(
                 readTimeoutMs,
                 retainOffline,
                 backupsKeep,
-                commandPermission
+                commandPermission,
+                compactionThresholdMb * 1024L * 1024L,
+                retainOfflineMb * 1024L * 1024L,
+                getWaitAdjusted
+                        ? "sync.get-wait-ms was raised to sync.switch-timeout-ms (" + switchTimeoutMs
+                                + "); update config.yml to silence this notice"
+                        : null
         );
+        return loaded;
     }
 
     public boolean failClosed() {
         // "kick" was accepted historically and must behave like fail-closed, never fail-open.
         return !"open".equals(failMode);
+    }
+
+    /** fail-mode: kick also disconnects the player so they cannot keep playing on unconfirmed data. */
+    public boolean kickOnFailure() {
+        return "kick".equals(failMode);
     }
 }

@@ -25,7 +25,8 @@ class IoBenchmarkTest {
         UUID uuid = UUID.randomUUID();
 
         Path neverPath = dir.resolve("never.mds");
-        try (JournalStore journal = new JournalStore(neverPath, VelocityConfig.FsyncMode.NEVER, 50, Long.MAX_VALUE)) {
+        try (JournalStore journal = new JournalStore(neverPath, VelocityConfig.FsyncMode.NEVER, 50, Long.MAX_VALUE,
+                LoggerFactory.getLogger("bench"))) {
             measure("journal_append_no_fsync", 100, 1000, () -> {
                 try {
                     journal.append(uuid, message, false);
@@ -36,7 +37,8 @@ class IoBenchmarkTest {
         }
 
         Path intervalPath = dir.resolve("interval.mds");
-        try (JournalStore journal = new JournalStore(intervalPath, VelocityConfig.FsyncMode.INTERVAL, 50, Long.MAX_VALUE)) {
+        try (JournalStore journal = new JournalStore(intervalPath, VelocityConfig.FsyncMode.INTERVAL, 50, Long.MAX_VALUE,
+                LoggerFactory.getLogger("bench"))) {
             measure("journal_append_interval", 50, 500, () -> {
                 try {
                     journal.append(uuid, message, false);
@@ -47,7 +49,8 @@ class IoBenchmarkTest {
         }
 
         Path alwaysPath = dir.resolve("always.mds");
-        try (JournalStore journal = new JournalStore(alwaysPath, VelocityConfig.FsyncMode.ALWAYS, 50, Long.MAX_VALUE)) {
+        try (JournalStore journal = new JournalStore(alwaysPath, VelocityConfig.FsyncMode.ALWAYS, 50, Long.MAX_VALUE,
+                LoggerFactory.getLogger("bench"))) {
             measure("journal_append_always_fsync", 5, 40, () -> {
                 try {
                     journal.append(uuid, message, true);

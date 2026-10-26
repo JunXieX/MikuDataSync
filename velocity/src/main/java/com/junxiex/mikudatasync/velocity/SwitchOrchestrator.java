@@ -1,8 +1,8 @@
 package com.junxiex.mikudatasync.velocity;
 
 import com.junxiex.mikudatasync.common.Frame;
-import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.IpcPayloads;
+import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.Opcode;
 import com.velocitypowered.api.event.EventTask;
 import com.velocitypowered.api.event.Subscribe;
@@ -16,12 +16,16 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Switch gate: before a player is allowed to connect to the target server, ask the source server
  * for a final snapshot and wait until it has been committed by the proxy journal.
  */
 public final class SwitchOrchestrator {
+
+    /** Grace window before the abort is sent, so an in-flight PUT can still be attributed. */
+    private static final long ABORT_GRACE_MS = 750L;
 
     private final Logger logger;
     private final VelocityConfig config;
@@ -69,7 +73,13 @@ public final class SwitchOrchestrator {
                 }
             } finally {
                 if (error != null) {
-                    ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT, IpcPayloads.uuid(uuid));
+                    // The backend may still be capturing and sending its PUT when the gate times out.
+                    // The abort is therefore delayed by a short grace window and then evaluated after
+                    // the disk queue drains, so it reports the state the store actually reached.
+                    CompletableFuture.delayedExecutor(ABORT_GRACE_MS, TimeUnit.MILLISECONDS)
+                            .execute(() -> ipcServer.afterPendingCommits(() ->
+                                    ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT,
+                                            IpcPayloads.abort(uuid, isCommitted(sourceServer, uuid)))));
                 }
                 switching.remove(uuid);
                 Metrics.recordGate(System.nanoTime() - gateStart);
@@ -79,14 +89,32 @@ public final class SwitchOrchestrator {
         return EventTask.resumeWhenComplete(gate);
     }
 
+    private boolean isCommitted(String sourceServer, UUID uuid) {
+        return ipcServer.wasCommitted(sourceServer, uuid);
+    }
+
     private void handleFailure(ServerPreConnectEvent event, Player player, String sourceServer, Throwable error) {
         String reason = error.getClass().getSimpleName() + ": " + error.getMessage();
-        if (config.failClosed()) {
-            logger.warn("Denying switch for {} (source={}): {}", player.getUsername(), sourceServer, reason);
-            event.setResult(ServerPreConnectEvent.ServerResult.denied());
-        } else {
+        if (!config.failClosed()) {
             logger.warn("Allowing switch for {} without confirmed snapshot (fail-open): {}",
                     player.getUsername(), reason);
+            return;
         }
+        if (ipcServer.isConnected(sourceServer)) {
+            logger.warn("Denying switch for {} (source={}): {}", player.getUsername(), sourceServer, reason);
+            event.setResult(ServerPreConnectEvent.ServerResult.denied());
+            if (config.kickOnFailure()) {
+                // fail-mode: kick means the player must not stay on a server whose snapshot could not
+                // be confirmed; disconnecting is the only way to guarantee that.
+                player.disconnect(net.kyori.adventure.text.Component.text(
+                        "跨服数据同步失败，请稍后重新连接"));
+            }
+            return;
+        }
+        // The source backend is gone (crash, restart, network loss). Denying here also denied the
+        // proxy's own fallback redirect, so every player on that server was stranded and finally
+        // kicked. The last committed snapshot is the best data available; let them leave.
+        logger.warn("Allowing switch for {} because source server {} is not connected ({}); "
+                + "using the last committed snapshot", player.getUsername(), sourceServer, reason);
     }
 }

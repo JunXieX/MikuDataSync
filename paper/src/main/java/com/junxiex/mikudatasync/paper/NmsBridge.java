@@ -47,7 +47,6 @@ public final class NmsBridge {
 
     // --- maps bridge ---
     private static boolean mapsAvailable;
-    private static Field craftMapViewWorldMap;
     private static Field mapColorsField;
     private static Field mapScaleField;
     private static Field mapCenterXField;
@@ -55,16 +54,12 @@ public final class NmsBridge {
     private static Field mapLockedField;
     private static Method mapSetDirty;
     private static Method craftWorldGetHandle;
-    private static Method serverLevelGetFreeMapId;
-    private static Method serverLevelSetMapData;
-    private static Method serverLevelDimension;
-    private static Method mapDataCreateFresh;
-    private static Method mapIdId;
     private static java.lang.reflect.Constructor<?> mapIdNew;
     private static Method serverLevelGetMapData;
     private static String mapServerId = "unknown";
     private static MapBindings mapBindings;
     private static final NamespacedKey MAP_ITEM_KEY = NamespacedKey.fromString("mikudatasync:map");
+    private static final Set<String> loggedFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     // --- data bridge (statistics + advancements) ---
     private static boolean dataAvailable;
@@ -128,10 +123,7 @@ public final class NmsBridge {
 
     private static void initializeMapBridge() {
         try {
-            Class<?> craftMapView = Class.forName("org.bukkit.craftbukkit.map.CraftMapView");
             Class<?> mapData = Class.forName("net.minecraft.world.level.saveddata.maps.MapItemSavedData");
-            craftMapViewWorldMap = craftMapView.getDeclaredField("worldMap");
-            craftMapViewWorldMap.setAccessible(true);
             mapColorsField = findField(mapData, "colors");
             mapScaleField = findField(mapData, "scale");
             mapCenterXField = findField(mapData, "centerX");
@@ -146,16 +138,9 @@ public final class NmsBridge {
             Class<?> craftWorld = Class.forName("org.bukkit.craftbukkit.CraftWorld");
             Class<?> serverLevel = Class.forName("net.minecraft.server.level.ServerLevel");
             Class<?> mapId = Class.forName("net.minecraft.world.level.saveddata.maps.MapId");
-            Class<?> resourceKey = Class.forName("net.minecraft.resources.ResourceKey");
             craftWorldGetHandle = craftWorld.getMethod("getHandle");
-            serverLevelGetFreeMapId = serverLevel.getMethod("getFreeMapId");
-            serverLevelSetMapData = serverLevel.getMethod("setMapData", mapId, mapData);
             serverLevelGetMapData = serverLevel.getMethod("getMapData", mapId);
             mapIdNew = mapId.getConstructor(int.class);
-            serverLevelDimension = serverLevel.getMethod("dimension");
-            mapDataCreateFresh = mapData.getMethod("createFresh", double.class, double.class, byte.class,
-                    boolean.class, boolean.class, resourceKey);
-            mapIdId = mapId.getMethod("id");
             mapsAvailable = true;
         } catch (Throwable t) {
             logger.warning("NMS map bridge unavailable: " + t);
@@ -236,9 +221,33 @@ public final class NmsBridge {
         }
         List<MapDataList.Entry> entries = new ArrayList<>(maps.values());
         if (entries.size() > MapDataList.MAX_MAPS) {
-            entries = entries.subList(0, MapDataList.MAX_MAPS);
+            // Keep the maps that have no embedded colour data first: those are the ones that would
+            // otherwise lose their colours entirely, because the MAPS segment is their only carrier.
+            entries.sort(java.util.Comparator.comparingInt(entry -> hasEmbeddedData(player, entry.mapId()) ? 1 : 0));
+            entries = new ArrayList<>(entries.subList(0, MapDataList.MAX_MAPS));
         }
         return MapDataList.encode(entries);
+    }
+
+    /** True when some item already carries this map's colours in its persistent data. */
+    private static boolean hasEmbeddedData(Player player, int mapId) {
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (item != null && item.getItemMeta() instanceof MapMeta meta && meta.hasMapId()
+                    && meta.getMapId() == mapId
+                    && meta.getPersistentDataContainer().has(MAP_ITEM_KEY,
+                    org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+                return true;
+            }
+        }
+        for (ItemStack item : player.getEnderChest().getContents()) {
+            if (item != null && item.getItemMeta() instanceof MapMeta meta && meta.hasMapId()
+                    && meta.getMapId() == mapId
+                    && meta.getPersistentDataContainer().has(MAP_ITEM_KEY,
+                    org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void collectMaps(Player player, ItemStack[] items, Map<Integer, MapDataList.Entry> out) {
@@ -265,118 +274,12 @@ public final class NmsBridge {
                 out.put(id, new MapDataList.Entry(id, (byte) mapScaleField.get(handle),
                         (int) mapCenterXField.get(handle), (int) mapCenterZField.get(handle),
                         (boolean) mapLockedField.get(handle), colors.clone()));
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
+                logOnce("collectMaps", t);
             }
         }
     }
 
-    public static void applyMaps(Player player, byte[] payload) throws Exception {
-        if (!mapsAvailable || player == null || payload == null) {
-            return;
-        }
-        List<MapDataList.Entry> entries = MapDataList.decode(payload);
-        logger.info("MDS map apply: " + entries.size() + " maps, first checksum=" + (entries.isEmpty() ? 0 : checksum(entries.get(0).colors())));
-        Map<Integer, Integer> mapped = new HashMap<>();
-        for (MapDataList.Entry entry : entries) {
-            MapView view = Bukkit.createMap(player.getWorld());
-            Object handle = mapHandle(view);
-            mapColorsField.set(handle, entry.colors().clone());
-            mapScaleField.set(handle, entry.scale());
-            mapCenterXField.set(handle, entry.centerX());
-            mapCenterZField.set(handle, entry.centerZ());
-            mapLockedField.set(handle, entry.locked());
-            markDirty(handle);
-            byte[] readBack = (byte[]) mapColorsField.get(handle);
-            logger.info("MDS map apply: source=" + entry.mapId() + " target=" + view.getId()
-                    + " checksum=" + checksum(readBack));
-            mapped.put(entry.mapId(), view.getId());
-        }
-        rewriteMapItems(player.getInventory().getContents(), mapped, player.getInventory());
-        rewriteMapItems(player.getEnderChest().getContents(), mapped, player.getEnderChest());
-    }
-
-    public static Map<Integer, Integer> createMaps(org.bukkit.World world, List<MapDataList.Entry> entries) throws Exception {
-        Map<Integer, Integer> mapped = new HashMap<>();
-        Object level = craftWorldGetHandle.invoke(world);
-        Object dimension = serverLevelDimension.invoke(level);
-        for (MapDataList.Entry entry : entries) {
-            // Allocate and register the map through the server map index. Bukkit.createMap can race
-            // the map registry on Folia (the saved data is loaded after creation and overwrites the
-            // colours), so use the authoritative NMS path instead.
-            Object mapId;
-            int newId;
-            int tries = 0;
-            do {
-                mapId = serverLevelGetFreeMapId.invoke(level);
-                newId = (int) mapIdId.invoke(mapId);
-            } while (serverLevelGetMapData.invoke(level, mapId) != null && ++tries < 4096);
-            Object data = mapDataCreateFresh.invoke(null, (double) entry.centerX(), (double) entry.centerZ(),
-                    entry.scale(), false, false, dimension);
-            mapColorsField.set(data, entry.colors().clone());
-            mapLockedField.set(data, entry.locked());
-            serverLevelSetMapData.invoke(level, mapId, data);
-            logger.info("MDS map create: source=" + entry.mapId() + " target=" + newId
-                    + " checksum=" + checksum((byte[]) mapColorsField.get(data))
-                    + " registered=" + checksum((byte[]) mapColorsField.get(mapData(world, newId))));
-            mapped.put(entry.mapId(), newId);
-        }
-        return mapped;
-    }
-
-    /** Re-applies colours to already-created target maps (used to survive late map-data loads). */
-    public static void reapplyMapColors(org.bukkit.World world, List<MapDataList.Entry> entries,
-                                       Map<Integer, Integer> mapped) {
-        for (MapDataList.Entry entry : entries) {
-            Integer target = mapped.get(entry.mapId());
-            if (target == null) {
-                continue;
-            }
-            try {
-                Object data = mapData(world, target);
-                if (data == null) {
-                    continue;
-                }
-                mapColorsField.set(data, entry.colors().clone());
-                mapScaleField.set(data, entry.scale());
-                mapCenterXField.set(data, entry.centerX());
-                mapCenterZField.set(data, entry.centerZ());
-                mapLockedField.set(data, entry.locked());
-                markDirty(data);
-            } catch (Throwable ignored) {
-            }
-        }
-    }
-
-    public static void rewriteMapItems(Player player, Map<Integer, Integer> mapped) {
-        if (mapped == null || mapped.isEmpty()) {
-            return;
-        }
-        rewriteMapItems(player.getInventory().getContents(), mapped, player.getInventory());
-        rewriteMapItems(player.getEnderChest().getContents(), mapped, player.getEnderChest());
-    }
-
-    private static void rewriteMapItems(ItemStack[] items, Map<Integer, Integer> mapped,
-                                        org.bukkit.inventory.Inventory inventory) {
-        if (items == null) {
-            return;
-        }
-        for (int i = 0; i < items.length; i++) {
-            ItemStack item = items[i];
-            if (item == null || item.getType().isAir()) {
-                continue;
-            }
-            if (!(item.getItemMeta() instanceof MapMeta meta) || !meta.hasMapId()) {
-                continue;
-            }
-            Integer newId = mapped.get(meta.getMapId());
-            if (newId == null) {
-                continue;
-            }
-            meta.setMapId(newId);
-            item.setItemMeta(meta);
-            inventory.setItem(i, item);
-        }
-    }
 
     private static void markDirty(Object handle) {
         if (mapSetDirty == null) {
@@ -384,12 +287,9 @@ public final class NmsBridge {
         }
         try {
             mapSetDirty.invoke(handle);
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            logOnce("markDirty", t);
         }
-    }
-
-    private static Object mapHandle(MapView view) throws Exception {
-        return craftMapViewWorldMap.get(view);
     }
 
     private static Object mapData(org.bukkit.World world, int id) throws Exception {
@@ -406,15 +306,34 @@ public final class NmsBridge {
 
     // ---------------------------------------------------------------- item maps
 
+    /**
+     * Byte budget for map colour data embedded inside items. Each embedded map costs ~16.4KB, and
+     * the inventory/ender-chest segment is capped at MAX_SEGMENT_BYTES (512KB) shared with every
+     * other item's NBT, so roughly 320KB is reserved for maps and 192KB stays available for the rest.
+     * Budgeting by bytes (not by map count) is what keeps a heavily decorated inventory encodable.
+     */
+    private static final int MAX_EMBEDDED_BYTES = 320 * 1024;
+
+    /** Recursion guard for containers/bundles nested inside items. */
+    private static final int MAX_CONTAINER_DEPTH = 4;
+
     public static void persistMaps(Player player) {
         if (!mapsAvailable || player == null) {
             return;
         }
-        persistMaps(player, player.getInventory().getContents(), player.getInventory());
-        persistMaps(player, player.getEnderChest().getContents(), player.getEnderChest());
+        int[] budget = {MAX_EMBEDDED_BYTES};
+        persistMaps(player, player.getInventory().getContents(), player.getInventory(), budget, 0);
+        persistMaps(player, player.getEnderChest().getContents(), player.getEnderChest(), budget, 0);
+        if (budget[0] <= 0) {
+            logger.fine("Map embedding budget exhausted; remaining maps are synced through the MAPS segment only");
+        }
     }
 
-    private static void persistMaps(Player player, ItemStack[] items, org.bukkit.inventory.Inventory inventory) {
+    private static void persistMaps(Player player, ItemStack[] items, org.bukkit.inventory.Inventory inventory,
+                                    int[] budget, int depth) {
+        if (items == null || depth > MAX_CONTAINER_DEPTH) {
+            return;
+        }
         for (int i = 0; i < items.length; i++) {
             ItemStack item = items[i];
             if (item == null || item.getType().isAir()) {
@@ -425,17 +344,30 @@ public final class NmsBridge {
                 continue;
             }
             if (meta instanceof MapMeta mapMeta && mapMeta.hasMapId()) {
-                persistSingleMap(player, item, mapMeta, inventory, i);
+                if (budget[0] <= 0) {
+                    continue;
+                }
+                if (mapMeta.getPersistentDataContainer().has(MAP_ITEM_KEY,
+                        org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+                    // Existing embedded data is already in the item and cannot be reclaimed, so it is
+                    // not charged against this capture's budget: charging it would let a collection
+                    // of old maps starve every new map out of the embedding path.
+                    continue;
+                }
+                if (persistSingleMap(player, item, mapMeta, inventory, i)) {
+                    budget[0] -= MapDataList.COLORS_LENGTH + 160;
+                }
             } else if (meta instanceof org.bukkit.inventory.meta.BlockStateMeta blockState
                     && blockState.getBlockState() instanceof org.bukkit.block.Container container
                     && !container.getInventory().isEmpty()) {
-                persistMaps(player, container.getInventory().getContents(), container.getInventory());
+                persistMaps(player, container.getInventory().getContents(), container.getInventory(), budget,
+                        depth + 1);
                 blockState.setBlockState(container);
                 item.setItemMeta(blockState);
                 inventory.setItem(i, item);
             } else if (meta instanceof org.bukkit.inventory.meta.BundleMeta bundle && bundle.hasItems()) {
                 ItemStack[] nested = bundle.getItems().toArray(ItemStack[]::new);
-                persistMaps(player, nested, null);
+                persistMaps(player, nested, null, budget, depth + 1);
                 bundle.setItems(java.util.List.of(nested));
                 item.setItemMeta(bundle);
                 inventory.setItem(i, item);
@@ -443,14 +375,57 @@ public final class NmsBridge {
         }
     }
 
-    private static void persistSingleMap(Player player, ItemStack item, MapMeta meta,
-                                         org.bukkit.inventory.Inventory inventory, int slot) {
-        if (meta.getPersistentDataContainer().has(MAP_ITEM_KEY, org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+    /**
+     * Removes embedded map colour data from every item. Used when a snapshot would otherwise exceed
+     * the segment limit: the map colours still travel in the MAPS segment, so dropping the embedded
+     * copy degrades fidelity instead of losing the whole snapshot.
+     */
+    public static void stripEmbeddedMaps(ItemStack[] items) {
+        if (items == null) {
             return;
+        }
+        for (ItemStack item : items) {
+            stripEmbeddedMaps(item, 0);
+        }
+    }
+
+    private static void stripEmbeddedMaps(ItemStack item, int depth) {
+        if (item == null || item.getType().isAir() || depth > MAX_CONTAINER_DEPTH) {
+            return;
+        }
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) {
+            return;
+        }
+        if (meta instanceof MapMeta mapMeta) {
+            if (mapMeta.getPersistentDataContainer().has(MAP_ITEM_KEY,
+                    org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+                mapMeta.getPersistentDataContainer().remove(MAP_ITEM_KEY);
+                item.setItemMeta(mapMeta);
+            }
+        } else if (meta instanceof org.bukkit.inventory.meta.BlockStateMeta blockState
+                && blockState.getBlockState() instanceof org.bukkit.block.Container container) {
+            for (ItemStack nested : container.getInventory().getContents()) {
+                stripEmbeddedMaps(nested, depth + 1);
+            }
+            blockState.setBlockState(container);
+            item.setItemMeta(blockState);
+        } else if (meta instanceof org.bukkit.inventory.meta.BundleMeta bundle && bundle.hasItems()) {
+            for (ItemStack nested : bundle.getItems()) {
+                stripEmbeddedMaps(nested, depth + 1);
+            }
+            item.setItemMeta(bundle);
+        }
+    }
+
+    private static boolean persistSingleMap(Player player, ItemStack item, MapMeta meta,
+                                            org.bukkit.inventory.Inventory inventory, int slot) {
+        if (meta.getPersistentDataContainer().has(MAP_ITEM_KEY, org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+            return false;
         }
         MapView view = Bukkit.getMap(meta.getMapId());
         if (view == null) {
-            return;
+            return false;
         }
         try {
             CapturingCanvas canvas = new CapturingCanvas(view);
@@ -467,7 +442,8 @@ public final class NmsBridge {
                             colors = nmsColors.clone();
                         }
                     }
-                } catch (Throwable ignored) {
+                } catch (Throwable t) {
+                    logOnce("persistSingleMap.colors", t);
                 }
             }
             java.util.List<ItemMapData.CursorData> cursors = new ArrayList<>();
@@ -492,7 +468,8 @@ public final class NmsBridge {
                     centerZ = (int) mapCenterZField.get(data);
                     locked = (boolean) mapLockedField.get(data);
                 }
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
+                logOnce("persistSingleMap.meta", t);
             }
             ItemMapData persisted = new ItemMapData(mapServerId, meta.getMapId(), scale, centerX, centerZ,
                     locked, colors.clone(), java.util.List.copyOf(cursors));
@@ -502,7 +479,17 @@ public final class NmsBridge {
             if (inventory != null) {
                 inventory.setItem(slot, item);
             }
-        } catch (Throwable ignored) {
+            return true;
+        } catch (Throwable t) {
+            logOnce("persistSingleMap", t);
+            return false;
+        }
+    }
+
+    /** Logs a map-bridge failure once per call site so version drift is visible without spam. */
+    private static void logOnce(String stage, Throwable error) {
+        if (loggedFailures.add(stage)) {
+            logger.warning("Map bridge failure in " + stage + ": " + error);
         }
     }
 
@@ -523,7 +510,8 @@ public final class NmsBridge {
                     return data;
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            logOnce("mapDataFor", t);
         }
         return null;
     }
@@ -611,7 +599,8 @@ public final class NmsBridge {
             if (inventory != null) {
                 inventory.setItem(slot, item);
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            logOnce("applySingleMap", t);
         }
     }
 
@@ -639,7 +628,7 @@ public final class NmsBridge {
 
             org.bukkit.inventory.Inventory source = Bukkit.createInventory(null, 27);
             source.setItem(0, shulker);
-            persistMaps(player, source.getContents(), source);
+            persistMaps(player, source.getContents(), source, new int[] {MAX_EMBEDDED_BYTES}, 0);
             ItemMapData persisted = nestedMap(source.getItem(0));
             if (persisted == null) {
                 return "recursiveMap FAILED: no persisted data in nested map";
@@ -785,27 +774,19 @@ public final class NmsBridge {
         }
     }
 
-    public static void applyStatistics(Player player, byte[] payload) throws Exception {
-        if (!dataAvailable) {
+    public static void applyStatistics(Player player, List<StatisticsList.Entry> entries) throws Exception {
+        if (!dataAvailable || entries == null) {
             return;
         }
         Object handle = craftGetHandle.invoke(player);
         Object counter = serverPlayerStatsField.get(handle);
         Object existingRaw = statsCounterStatsField.get(counter);
         Map<?, ?> existingStats = existingRaw instanceof Map<?, ?> map ? map : null;
-        if (existingStats != null) {
-            for (Object stat : new ArrayList<>(existingStats.keySet())) {
-                Object current = existingStats.get(stat);
-                if (current instanceof Number number && number.intValue() == 0) {
-                    continue;
-                }
-                try {
-                    statsCounterSetValue.invoke(counter, handle, stat, 0);
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        for (StatisticsList.Entry entry : StatisticsList.decode(payload)) {
+        // Two passes: resolve everything first, then clear only stats this snapshot does not mention.
+        // A stat that cannot be resolved here (datapack or version drift) is left untouched instead of
+        // being zeroed, and a resolvable one is written without a destructive clear in between.
+        List<Object[]> resolved = new ArrayList<>(entries.size());
+        for (StatisticsList.Entry entry : entries) {
             Object statType = registryGetValue.invoke(statTypeRegistry, identifier(entry.statTypeKey()));
             if (statType == null) {
                 continue;
@@ -829,14 +810,71 @@ public final class NmsBridge {
             if (stat == null) {
                 continue;
             }
-            if (existingStats != null) {
+            resolved.add(new Object[] {stat, entry.value()});
+        }
+        // Pre-fold the snapshot entries into a lookup table: comparing every existing stat against
+        // every entry would turn a login into hundreds of thousands of reflective calls.
+        Map<String, java.util.Set<String>> desiredKeys = new HashMap<>();
+        for (StatisticsList.Entry entry : entries) {
+            desiredKeys.computeIfAbsent(entry.statTypeKey(), key -> new java.util.HashSet<>())
+                    .add(entry.valueKey() == null ? "" : entry.valueKey());
+        }
+        if (existingStats != null) {
+            for (Object stat : new ArrayList<>(existingStats.keySet())) {
                 Object current = existingStats.get(stat);
-                if (current instanceof Number number && number.intValue() == entry.value()) {
+                if (current instanceof Number number && number.intValue() == 0) {
+                    continue;
+                }
+                // Stats this server cannot map back to a snapshot entry stay as they are: clearing
+                // them would erase progress that simply does not exist in this build's registries.
+                if (!matchesSnapshotEntry(stat, desiredKeys)) {
+                    continue;
+                }
+                try {
+                    statsCounterSetValue.invoke(counter, handle, stat, 0);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        for (Object[] pair : resolved) {
+            if (existingStats != null) {
+                Object current = existingStats.get(pair[0]);
+                if (current instanceof Number number && number.intValue() == (int) pair[1]) {
                     continue;
                 }
             }
-            statsCounterSetValue.invoke(counter, handle, stat, entry.value());
+            statsCounterSetValue.invoke(counter, handle, pair[0], (int) pair[1]);
         }
+    }
+
+    /** True when this stat corresponds to an entry the snapshot explicitly carries. */
+    private static boolean matchesSnapshotEntry(Object stat, Map<String, java.util.Set<String>> desiredKeys)
+            throws Exception {
+        Object type = statGetType.invoke(stat);
+        Object value = statGetValue.invoke(stat);
+        if (type == null) {
+            return false;
+        }
+        Object typeId = registryGetKey.invoke(statTypeRegistry, type);
+        if (typeId == null) {
+            return false;
+        }
+        java.util.Set<String> values = desiredKeys.get(typeId.toString());
+        if (values == null) {
+            return false;
+        }
+        String valueKey;
+        if (type == statsCustomType) {
+            valueKey = String.valueOf(value);
+        } else {
+            Object registry = statTypeRegistries.get(type);
+            if (registry == null || value == null) {
+                return false;
+            }
+            Object valueId = registryGetKey.invoke(registry, value);
+            valueKey = valueId == null ? null : valueId.toString();
+        }
+        return valueKey != null && values.contains(valueKey);
     }
 
     // ------------------------------------------------------ advancements
@@ -883,13 +921,13 @@ public final class NmsBridge {
      * Writes criteria progress directly. This deliberately avoids Bukkit awardCriteria and the
      * vanilla award() path, which would re-run advancement rewards (loot/functions/recipes/XP).
      */
-    public static void applyAdvancements(Player player, byte[] payload, boolean strict) throws Exception {
-        if (!dataAvailable) {
+    public static void applyAdvancements(Player player, List<AdvancementList.Entry> entries, boolean strict)
+            throws Exception {
+        if (!dataAvailable || entries == null) {
             return;
         }
         Object handle = craftGetHandle.invoke(player);
         Object playerAdvancements = serverPlayerAdvancementsField.get(handle);
-        List<AdvancementList.Entry> entries = AdvancementList.decode(payload);
         Set<String> desiredKeys = new HashSet<>();
         for (AdvancementList.Entry entry : entries) {
             desiredKeys.add(entry.advancementKey());

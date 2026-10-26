@@ -20,6 +20,9 @@ import java.util.zip.GZIPOutputStream;
  */
 public final class SnapshotEnvelope {
 
+    /** Segment-count ceiling; encode and decode must agree or writeShort would truncate silently. */
+    public static final int MAX_SEGMENTS = 64;
+
     private final int schemaVersion;
     private final int dataVersion;
     private final TreeMap<Integer, byte[]> segments;
@@ -50,13 +53,10 @@ public final class SnapshotEnvelope {
         return segments.containsKey(id);
     }
 
-    public SnapshotEnvelope withSegment(int id, byte[] data) {
-        TreeMap<Integer, byte[]> copy = new TreeMap<>(segments);
-        copy.put(id, data);
-        return new SnapshotEnvelope(schemaVersion, dataVersion, copy);
-    }
-
     public byte[] encode() throws ProtocolException {
+        if (segments.size() > MAX_SEGMENTS) {
+            throw new ProtocolException("too many segments: " + segments.size());
+        }
         ByteWriter inner = new ByteWriter(256);
         inner.writeByte(flags());
         inner.writeInt(dataVersion);
@@ -75,6 +75,9 @@ public final class SnapshotEnvelope {
             inner.writeBytes(data);
         }
         byte[] raw = inner.toByteArray();
+        if (raw.length > Protocol.MAX_INNER_BYTES) {
+            throw new ProtocolException("snapshot inner body too large: " + raw.length);
+        }
         byte compression = 0;
         byte[] payload = raw;
         if (raw.length > 256) {
@@ -124,7 +127,7 @@ public final class SnapshotEnvelope {
         }
         int compression = reader.readByte();
         int rawLength = reader.readInt();
-        if (rawLength < 0 || rawLength > Protocol.MAX_SNAPSHOT_BYTES) {
+        if (rawLength < 0 || rawLength > Protocol.MAX_INNER_BYTES) {
             throw new ProtocolException("invalid inner length: " + rawLength);
         }
         int payloadLength = bytes.length - 14;
@@ -152,17 +155,22 @@ public final class SnapshotEnvelope {
         int flags = inner.readByte();
         int dataVersion = inner.readInt();
         int count = inner.readUnsignedShort();
-        if (count > 64) {
+        if (count > MAX_SEGMENTS) {
             throw new ProtocolException("invalid segment count: " + count);
         }
         TreeMap<Integer, byte[]> segments = new TreeMap<>();
         for (int i = 0; i < count; i++) {
             int id = inner.readUnsignedShort();
             int length = inner.readInt();
+            if (id <= 0 || id > 0xFFFF) {
+                throw new ProtocolException("invalid segment id: " + id);
+            }
             if (length < 0 || length > Protocol.MAX_SEGMENT_BYTES) {
                 throw new ProtocolException("invalid segment length: " + length);
             }
-            segments.put(id, inner.readBytes(length));
+            if (segments.put(id, inner.readBytes(length)) != null) {
+                throw new ProtocolException("duplicate segment id: " + id);
+            }
         }
         if (inner.remaining() != 0) {
             throw new ProtocolException("unexpected bytes in snapshot body: " + inner.remaining());
@@ -191,17 +199,22 @@ public final class SnapshotEnvelope {
         int flags = reader.readByte();
         int dataVersion = reader.readInt();
         int count = reader.readUnsignedShort();
-        if (count > 64) {
+        if (count > MAX_SEGMENTS) {
             throw new ProtocolException("invalid segment count: " + count);
         }
         TreeMap<Integer, byte[]> segments = new TreeMap<>();
         for (int i = 0; i < count; i++) {
             int id = reader.readUnsignedShort();
             int length = reader.readInt();
+            if (id <= 0 || id > 0xFFFF) {
+                throw new ProtocolException("invalid segment id: " + id);
+            }
             if (length < 0 || length > Protocol.MAX_SEGMENT_BYTES) {
                 throw new ProtocolException("invalid segment length: " + length);
             }
-            segments.put(id, reader.readBytes(length));
+            if (segments.put(id, reader.readBytes(length)) != null) {
+                throw new ProtocolException("duplicate segment id: " + id);
+            }
         }
         if (reader.remaining() != 4) {
             throw new ProtocolException("unexpected trailing bytes: " + reader.remaining());
@@ -235,7 +248,7 @@ public final class SnapshotEnvelope {
             int read;
             while ((read = gzip.read(buffer)) >= 0) {
                 output.write(buffer, 0, read);
-                if (output.size() > Protocol.MAX_SNAPSHOT_BYTES) {
+                if (output.size() > Protocol.MAX_INNER_BYTES) {
                     throw new ProtocolException("decompressed snapshot exceeds limit");
                 }
             }

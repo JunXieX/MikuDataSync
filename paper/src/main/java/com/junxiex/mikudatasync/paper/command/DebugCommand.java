@@ -86,10 +86,15 @@ public final class DebugCommand {
                         .then(Commands.literal("shulker").executes(context -> mapShulker(context.getSource().getSender(), config)))
                         .then(Commands.literal("inspect").executes(context -> mapInspect(context.getSource().getSender(), config)))
                         .then(Commands.literal("selftest").executes(context -> {
-                            if (context.getSource().getSender() instanceof Player player) {
-                                context.getSource().getSender().sendMessage(Component.text(NmsBridge.mapSelfTest(player)));
+                            CommandSender sender = context.getSource().getSender();
+                            if (!enabled(sender, config)) {
+                                return 0;
+                            }
+                            if (sender instanceof Player player) {
+                                sender.sendMessage(Component.text(NmsBridge.mapSelfTest(player)));
                                 return Command.SINGLE_SUCCESS;
                             }
+                            sender.sendMessage(Component.text("players only"));
                             return 0;
                         }))
                         .then(Commands.literal("fill")

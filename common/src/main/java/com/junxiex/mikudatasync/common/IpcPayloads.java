@@ -52,6 +52,36 @@ public final class IpcPayloads {
         return appliedSeq;
     }
 
+    /**
+     * Abort payload: the UUID plus whether the proxy already committed the handoff snapshot. When it
+     * was committed the cursor item only lives inside that snapshot, so the backend must not put a
+     * second copy back into the menu.
+     */
+    public static byte[] abort(UUID uuid, boolean snapshotCommitted) {
+        return new ByteWriter(24)
+                .writeLong(uuid.getMostSignificantBits())
+                .writeLong(uuid.getLeastSignificantBits())
+                .writeBoolean(snapshotCommitted)
+                .toByteArray();
+    }
+
+    /**
+     * Strict parse: both sides speak the same protocol version, so a UUID-only payload is a bug, not
+     * a compatibility case. Treating it as "not committed" would silently duplicate the cursor item.
+     */
+    public static AbortRequest readAbort(byte[] payload) throws ProtocolException {
+        ByteReader reader = new ByteReader(payload);
+        UUID uuid = readUuid(reader);
+        boolean committed = reader.readBoolean();
+        if (reader.remaining() != 0) {
+            throw new ProtocolException("unexpected trailing bytes in abort payload");
+        }
+        return new AbortRequest(uuid, committed);
+    }
+
+    public record AbortRequest(UUID uuid, boolean snapshotCommitted) {
+    }
+
     public static byte[] putOk(long seq) {
         return new ByteWriter(8).writeVarLong(seq).toByteArray();
     }
@@ -73,9 +103,20 @@ public final class IpcPayloads {
 
     /** Returns null when the proxy has no snapshot for this player. */
     public static SnapshotMessage readSnapshotResponse(byte[] payload) throws ProtocolException {
+        if (payload.length == 0) {
+            throw new ProtocolException("empty snapshot response");
+        }
         ByteReader reader = new ByteReader(payload);
-        boolean found = reader.readBoolean();
-        if (!found) {
+        // Only 0 and 1 are valid flags; anything else is a different frame (an error payload, for
+        // example) and must not be mistaken for "no snapshot".
+        int flag = reader.readByte();
+        if (flag != 0 && flag != 1) {
+            throw new ProtocolException("malformed snapshot response flag: " + flag);
+        }
+        if (flag == 0) {
+            if (reader.remaining() != 0) {
+                throw new ProtocolException("unexpected trailing bytes in missing snapshot response");
+            }
             return null;
         }
         return SnapshotMessage.decode(reader.readBytes(reader.remaining()));

@@ -87,7 +87,7 @@ public final class AsyncBenchmark {
         SnapshotMessage message = new SnapshotMessage(1, 1, "quit", "survival-1", payload);
         UUID uuid = UUID.randomUUID();
         try (JournalStore journal = new JournalStore(dir.resolve("never.mds"),
-                VelocityConfig.FsyncMode.NEVER, 50, Long.MAX_VALUE)) {
+                VelocityConfig.FsyncMode.NEVER, 50, Long.MAX_VALUE, LoggerFactory.getLogger("bench"))) {
             run("journal_append_no_fsync", 200, 2000, () -> {
                 try {
                     journal.append(uuid, message, false);
@@ -97,7 +97,7 @@ public final class AsyncBenchmark {
             });
         }
         try (JournalStore journal = new JournalStore(dir.resolve("interval.mds"),
-                VelocityConfig.FsyncMode.INTERVAL, 50, Long.MAX_VALUE)) {
+                VelocityConfig.FsyncMode.INTERVAL, 50, Long.MAX_VALUE, LoggerFactory.getLogger("bench"))) {
             run("journal_append_interval", 50, 500, () -> {
                 try {
                     journal.append(uuid, message, false);
@@ -107,7 +107,7 @@ public final class AsyncBenchmark {
             });
         }
         try (JournalStore journal = new JournalStore(dir.resolve("always.mds"),
-                VelocityConfig.FsyncMode.ALWAYS, 50, Long.MAX_VALUE)) {
+                VelocityConfig.FsyncMode.ALWAYS, 50, Long.MAX_VALUE, LoggerFactory.getLogger("bench"))) {
             run("journal_append_always_fsync", 5, 50, () -> {
                 try {
                     journal.append(uuid, message, true);

@@ -6,6 +6,9 @@ import java.util.Arrays;
 /** Growable big-endian byte writer with varint support. */
 public final class ByteWriter {
 
+    /** Arrays cannot exceed this size; guarding keeps the doubling loop from wrapping negative. */
+    private static final int MAX_CAPACITY = Integer.MAX_VALUE - 8;
+
     private byte[] buffer;
     private int size;
 
@@ -18,14 +21,18 @@ public final class ByteWriter {
     }
 
     private void ensure(int extra) {
-        if (size + extra <= buffer.length) {
+        long required = (long) size + extra;
+        if (required <= buffer.length) {
             return;
         }
-        int capacity = buffer.length;
-        while (capacity < size + extra) {
+        if (required > MAX_CAPACITY) {
+            throw new IllegalStateException("buffer is too large: " + required);
+        }
+        long capacity = buffer.length;
+        while (capacity < required) {
             capacity <<= 1;
         }
-        buffer = Arrays.copyOf(buffer, capacity);
+        buffer = Arrays.copyOf(buffer, (int) Math.min(capacity, MAX_CAPACITY));
     }
 
     public ByteWriter writeByte(int value) {

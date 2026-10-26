@@ -17,14 +17,14 @@ import java.util.concurrent.TimeUnit;
 @Plugin(
         id = "mikudatasync",
         name = "MikuDataSync",
-        version = "1.5.1",
+        version = "1.6.0",
         description = "Cross-server player data synchronization",
         authors = {"JunXieX"},
         url = "https://github.com/JunXieX/MikuDataSync"
 )
 public final class MikuDataSyncVelocity {
 
-    private static final long COMPACTION_THRESHOLD_BYTES = 64L * 1024 * 1024;
+
 
     private final ProxyServer server;
     private final Logger logger;
@@ -33,6 +33,8 @@ public final class MikuDataSyncVelocity {
     private VelocityConfig config;
     private SnapshotStore store;
     private IpcServer ipcServer;
+    private String startFailure;
+    private MdsCommand command;
 
     @Inject
     public MikuDataSyncVelocity(ProxyServer server, Logger logger, @DataDirectory Path dataDirectory) {
@@ -45,39 +47,60 @@ public final class MikuDataSyncVelocity {
     public void onProxyInitialize(ProxyInitializeEvent event) {
         try {
             config = VelocityConfig.load(dataDirectory);
+            if (config.warning() != null) {
+                logger.warn(config.warning());
+            }
             JournalStore journal = new JournalStore(
                     dataDirectory.resolve(config.journalFile()),
                     config.fsyncMode(),
                     config.fsyncIntervalMs(),
-                    COMPACTION_THRESHOLD_BYTES);
-            store = new SnapshotStore(config.maxSnapshotBytes(), journal);
+                    config.compactionThresholdBytes(),
+                    logger);
+            store = new SnapshotStore(config.maxSnapshotBytes(), journal, config.retainOfflineBytes());
             java.util.Set<String> knownServers = server.getAllServers().stream()
                     .map(registered -> registered.getServerInfo().getName())
                     .collect(java.util.stream.Collectors.toSet());
             ipcServer = new IpcServer(logger, config, store, knownServers);
             ipcServer.start();
 
-            server.getEventManager().register(this, new ProxyListener(server, logger, store, config));
+            server.getEventManager().register(this, new ProxyListener(this, server, logger, store, config));
             server.getEventManager().register(this, new SwitchOrchestrator(logger, config, ipcServer));
+            long flushSeconds = Math.max(1, config.periodicFlushSeconds());
             server.getScheduler()
                     .buildTask(this, () -> {
                         store.forceJournal();
                         store.maybeCompact();
                     })
-                    .repeat(30L, TimeUnit.SECONDS)
+                    .repeat(flushSeconds, TimeUnit.SECONDS)
                     .schedule();
             var meta = server.getCommandManager().metaBuilder("mds").plugin(this).build();
-            server.getCommandManager().register(meta, new MdsCommand(this, server, store, ipcServer, config,
-                    new BackupService(dataDirectory.resolve("backups"), config.backupsKeep(), logger)));
+            command = new MdsCommand(this, server, store, ipcServer, config,
+                    new BackupService(dataDirectory.resolve("backups"), config.backupsKeep(), logger));
+            server.getCommandManager().register(meta, command);
             logger.info("MikuDataSync enabled (protocol {}, journal {})",
                     com.junxiex.mikudatasync.common.Protocol.PROTOCOL_VERSION, store.journalStatus());
         } catch (Exception e) {
             logger.error("MikuDataSync failed to start; cross-server sync is disabled", e);
+            // Release whatever was already opened so a later restart is not blocked by a bound port
+            // or an open journal, and keep the reason visible through /mds doctor.
+            startFailure = String.valueOf(e.getMessage());
+            if (command != null) {
+                command.close();
+            }
+            if (ipcServer != null) {
+                ipcServer.close();
+            }
+            if (store != null) {
+                store.close();
+            }
         }
     }
 
     @Subscribe
     public void onProxyShutdown(ProxyShutdownEvent event) {
+        if (command != null) {
+            command.close();
+        }
         if (ipcServer != null) {
             ipcServer.close();
         }
@@ -92,5 +115,9 @@ public final class MikuDataSyncVelocity {
 
     public SnapshotStore store() {
         return store;
+    }
+
+    public String startFailure() {
+        return startFailure;
     }
 }

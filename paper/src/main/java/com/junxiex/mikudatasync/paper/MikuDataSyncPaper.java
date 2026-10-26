@@ -1,7 +1,6 @@
 package com.junxiex.mikudatasync.paper;
 
 import com.junxiex.mikudatasync.common.IpcPayloads;
-import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.paper.command.MdsCommand;
 import com.junxiex.mikudatasync.paper.listener.HandoffListener;
@@ -21,6 +20,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
     private ApplyService applyService;
     private PendingSnapshots pendingSnapshots;
     private HandoffManager handoffManager;
+    private MapBindings mapBindings;
 
     @Override
     public void onEnable() {
@@ -33,11 +33,11 @@ public final class MikuDataSyncPaper extends JavaPlugin {
             return;
         }
 
-        NmsBridge.initialize(getLogger(), config.serverId(),
-                new MapBindings(getDataFolder().toPath().resolve("map-bindings.properties")));
+        mapBindings = new MapBindings(getDataFolder().toPath().resolve("map-bindings.properties"), getLogger());
+        NmsBridge.initialize(getLogger(), config.serverId(), mapBindings);
         ipcClient = new IpcClient(this, config);
         captureService = new CaptureService(getLogger(), config);
-        applyService = new ApplyService(this, config);
+        applyService = new ApplyService(config);
         pendingSnapshots = new PendingSnapshots();
         handoffManager = new HandoffManager(this, ipcClient, captureService);
 
@@ -48,7 +48,10 @@ public final class MikuDataSyncPaper extends JavaPlugin {
             try {
                 switch (frame.opcode()) {
                     case FLUSH_REQ -> handoffManager.handleFlush(IpcPayloads.parseUuid(frame.payload()), frame.requestId());
-                    case HANDOFF_ABORT -> handoffManager.abort(IpcPayloads.parseUuid(frame.payload()));
+                    case HANDOFF_ABORT -> {
+                        IpcPayloads.AbortRequest abort = IpcPayloads.readAbort(frame.payload());
+                        handoffManager.abort(abort.uuid(), abort.snapshotCommitted());
+                    }
                     case RESTORE_APPLY -> restoreHandler.handle(frame.payload(), frame.requestId());
                     case BACKUP_REQ -> backupHandler.handle(frame.payload(), frame.requestId());
                     default -> {
@@ -60,6 +63,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         });
         ipcClient.start();
 
+        registerPermission();
         getServer().getPluginManager().registerEvents(playerListener, this);
         getServer().getPluginManager().registerEvents(new HandoffListener(handoffManager), this);
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
@@ -76,7 +80,38 @@ public final class MikuDataSyncPaper extends JavaPlugin {
                 + " (" + (PluginSchedulers.isFolia() ? "Folia" : "Paper") + ")");
     }
 
+    /**
+     * Registers the admin node at runtime. Without it Bukkit only answers {@code hasPermission}
+     * positively for operators, so a LuckPerms-granted non-OP admin would not even see the command.
+     */
+    private void registerPermission() {
+        try {
+            org.bukkit.permissions.Permission permission =
+                    new org.bukkit.permissions.Permission("mikudatasync.admin",
+                            org.bukkit.permissions.PermissionDefault.OP);
+            getServer().getPluginManager().addPermission(permission);
+        } catch (IllegalArgumentException alreadyRegistered) {
+            // Reload path: the node exists already and keeps its description.
+        }
+    }
+
+    /** Removes only the node this plugin created, so a reload does not leave stale entries. */
+    private void removeRegisteredPermission() {
+        try {
+            getServer().getPluginManager().removePermission("mikudatasync.admin");
+        } catch (IllegalArgumentException notRegistered) {
+            // Nothing to clean up.
+        }
+    }
+
     private void startPeriodicSnapshots() {
+        // Map bindings are written in batches instead of once per map on the entity thread. This is
+        // independent of snapshot scheduling, so it runs even when periodic snapshots are disabled.
+        PluginSchedulers.runTimer(this, () -> {
+            if (mapBindings != null) {
+                mapBindings.flush();
+            }
+        }, 100L, 100L);
         int seconds = config.periodicSnapshotSeconds();
         if (seconds <= 0) {
             return;
@@ -87,6 +122,11 @@ public final class MikuDataSyncPaper extends JavaPlugin {
 
     private void snapshotOnlinePlayers() {
         for (Player player : getServer().getOnlinePlayers()) {
+            if (handoffManager.isHandingOff(player.getUniqueId())) {
+                // The switch flush already owns this player's snapshot; a periodic capture now would
+                // race the final PUT and could overwrite it with a pre-flush state.
+                continue;
+            }
             PluginSchedulers.runOnEntity(this, player, () -> {
                 SnapshotMessage message = captureService.capture(player, "periodic");
                 if (message == null) {
@@ -105,23 +145,83 @@ public final class MikuDataSyncPaper extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        removeRegisteredPermission();
+        if (mapBindings != null) {
+            mapBindings.flush();
+        }
         if (ipcClient == null) {
             return;
         }
         if (captureService != null) {
-            for (Player player : getServer().getOnlinePlayers()) {
-                try {
-                    SnapshotMessage message = captureService.capture(player, "shutdown");
-                    if (message != null) {
-                        ipcClient.putSnapshot(player.getUniqueId(), message, 500L).get(1, TimeUnit.SECONDS);
-                    }
-                } catch (Exception e) {
-                    getLogger().warning("Failed to flush shutdown snapshot: " + e.getMessage());
-                }
-            }
+            flushShutdownSnapshots();
         }
         ipcClient.awaitPending(1000L);
+        ipcClient.drainWrites(500L);
         ipcClient.close();
+    }
+
+    /**
+     * Captures every online player for the last time. Capture reads inventory/ender chest/PDC, so it
+     * must run on the owning entity/region thread (on Folia reading another region's player is not
+     * allowed), and the writes are awaited once for the whole batch instead of per player: a serial
+     * one-second wait per player used to add up to the watchdog limit on a full server.
+     */
+    private void flushShutdownSnapshots() {
+        java.util.List<Player> players = new java.util.ArrayList<>(getServer().getOnlinePlayers());
+        if (players.isEmpty()) {
+            return;
+        }
+        if (!PluginSchedulers.isFolia()) {
+            // On Paper onDisable already runs on the main thread, which is the thread that owns all
+            // player state; scheduling here would post a task that never runs during shutdown.
+            for (Player player : players) {
+                flushOneShutdownSnapshot(player);
+            }
+            return;
+        }
+        java.util.Set<UUID> pending = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        for (Player player : players) {
+            UUID uuid = player.getUniqueId();
+            pending.add(uuid);
+            try {
+                PluginSchedulers.runOnEntity(this, player, () -> {
+                    flushOneShutdownSnapshot(player);
+                    pending.remove(uuid);
+                });
+            } catch (Exception e) {
+                pending.remove(uuid);
+            }
+        }
+        long deadline = System.currentTimeMillis() + 1500L;
+        while (!pending.isEmpty() && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(25L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        if (!pending.isEmpty()) {
+            getLogger().warning("Shutdown snapshot capture timed out for " + pending.size()
+                    + " player(s); continuing shutdown");
+        }
+    }
+
+    private void flushOneShutdownSnapshot(Player player) {
+        UUID uuid = player.getUniqueId();
+        try {
+            SnapshotMessage message = captureService.capture(player, "shutdown");
+            if (message != null) {
+                ipcClient.putSnapshot(uuid, message, 500L).whenComplete((seq, error) -> {
+                    if (error != null) {
+                        getLogger().warning("Failed to persist shutdown snapshot for " + uuid + ": "
+                                + error.getMessage());
+                    }
+                });
+            }
+        } catch (Exception e) {
+            getLogger().warning("Failed to flush shutdown snapshot for " + uuid + ": " + e.getMessage());
+        }
     }
 
     public PaperConfig config() {

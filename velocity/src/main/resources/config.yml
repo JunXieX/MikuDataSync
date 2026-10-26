@@ -2,29 +2,30 @@ protocol:
   bind: "127.0.0.1"
   port: 25666
   secret: "please-change-this-secret-to-a-random-32-byte-string"
-  max-frame-bytes: 4194304
   read-timeout-ms: 60000
 
 store:
   journal-file: "data/journal.mds"
   fsync-mode: "interval"
   fsync-interval-ms: 50
+  # Journal is rewritten with the latest record per player once it grows past this size.
   compaction-threshold-mb: 64
   retain-offline-snapshots: false
+  # Byte budget for the in-memory snapshot table; entries beyond it are dropped oldest first.
+  retain-offline-budget-mb: 256
 
 backups:
   keep: 20
 
 commands:
-  permission: ""
+  # Empty falls back to mikudatasync.admin. Never leave /mds open to players: backup+restore
+  # would let them roll their own state back.
+  permission: "mikudatasync.admin"
 
 sync:
   switch-timeout-ms: 1500
-  get-wait-ms: 300
+  # Pre-login GET waits this long for an in-flight switch flush; keep it >= switch-timeout-ms.
+  get-wait-ms: 1500
   fail-mode: "closed"
   periodic-flush-seconds: 30
   max-snapshot-bytes: 1048576
-
-metrics:
-  sample-rate: 0.015625
-  log-slow-apply-ms: 5

@@ -7,6 +7,7 @@ import com.junxiex.mikudatasync.common.Metrics;
 import org.bukkit.Bukkit;
 import com.junxiex.mikudatasync.common.MiscData;
 import com.junxiex.mikudatasync.common.Protocol;
+import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.Segment;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.StageMetrics;
@@ -61,10 +62,12 @@ public final class CaptureService {
             Map<Integer, byte[]> segments = new LinkedHashMap<>();
             PlayerInventory inventory = player.getInventory();
             if (config.enabled(Segment.INVENTORY)) {
-                segments.put(Segment.INVENTORY, timed("capture.inventory", () -> ItemStack.serializeItemsAsBytes(inventory.getContents())));
+                segments.put(Segment.INVENTORY, timed("capture.inventory",
+                        () -> serializeWithinLimit(inventory.getContents(), "inventory")));
             }
             if (config.enabled(Segment.ENDER_CHEST)) {
-                segments.put(Segment.ENDER_CHEST, timed("capture.ender", () -> ItemStack.serializeItemsAsBytes(player.getEnderChest().getContents())));
+                segments.put(Segment.ENDER_CHEST, timed("capture.ender",
+                        () -> serializeWithinLimit(player.getEnderChest().getContents(), "ender-chest")));
             }
             if (config.enabled(Segment.CORE)) {
                 segments.put(Segment.CORE, timed("capture.core", () -> coreData(player).encode()));
@@ -76,7 +79,17 @@ public final class CaptureService {
                 segments.put(Segment.ATTRIBUTES, timed("capture.attributes", () -> attributes(player)));
             }
             if (config.enabled(Segment.PDC)) {
-                segments.put(Segment.PDC, timed("capture.pdc", () -> player.getPersistentDataContainer().serializeToBytes()));
+                byte[] pdc = timed("capture.pdc",
+                        () -> player.getPersistentDataContainer().serializeToBytes());
+                if (pdc.length <= Protocol.MAX_SEGMENT_BYTES) {
+                    segments.put(Segment.PDC, pdc);
+                } else {
+                    // Other plugins own this data, so it cannot be trimmed. Skipping the segment keeps
+                    // the player switchable instead of failing every capture for this player.
+                    logger.warning("Player PDC is too large for one segment (" + pdc.length
+                            + " bytes); skipping PDC sync for " + player.getName()
+                            + " (set sync.sections.pdc: false to silence this)");
+                }
             }
             if (config.enabled(Segment.ADVANCEMENTS) && NmsBridge.dataBridgeAvailable()) {
                 byte[] advancements = timed("capture.advancements", () -> NmsBridge.captureAdvancements(player));
@@ -112,7 +125,26 @@ public final class CaptureService {
             long encodeStart = System.nanoTime();
             byte[] encoded;
             try {
-                encoded = envelope.encode();
+                try {
+                    encoded = envelope.encode();
+                } catch (ProtocolException tooLarge) {
+                    // Highly incompressible data can pass every per-segment limit and still exceed the
+                    // compressed snapshot budget. Drop the optional high-entropy segments once before
+                    // giving up, so the player stays switchable instead of being refused forever.
+                    SnapshotEnvelope degraded = degrade(envelope, segments);
+                    if (degraded == null) {
+                        throw tooLarge;
+                    }
+                    try {
+                        encoded = degraded.encode();
+                    } catch (ProtocolException stillTooLarge) {
+                        // The degraded form must never replace the original failure with a smaller one:
+                        // report the original cause so the log says which limit was hit first.
+                        throw tooLarge;
+                    }
+                    logger.warning("Snapshot for " + player.getName() + " exceeded the size limit ("
+                            + tooLarge.getMessage() + "); optional segments were dropped for this capture");
+                }
             } finally {
                 StageMetrics.record("capture.encode", System.nanoTime() - encodeStart);
             }
@@ -120,10 +152,78 @@ public final class CaptureService {
             Bukkit.getPluginManager().callEvent(new MikuDataSyncCaptureEvent(player, cause, message));
             return message;
         } catch (Exception e) {
-            Metrics.recordCapture(System.nanoTime() - start);
+            Metrics.recordCaptureFailure();
             logger.severe("Failed to capture snapshot for " + player.getName() + ": " + e);
             return null;
+        } catch (Throwable t) {
+            // StackOverflowError from deeply nested containers would otherwise escape into the
+            // region thread and take the whole region down.
+            Metrics.recordCaptureFailure();
+            logger.severe("Failed to capture snapshot for " + player.getName() + ": " + t);
+            return null;
         }
+    }
+
+    /**
+     * Builds a smaller envelope for a capture that does not fit: map colours first (the MAPS segment
+     * carries them), then the PDC and map segments themselves. Returns null when even that is too
+     * large, in which case the original failure stands.
+     */
+    private static SnapshotEnvelope degrade(SnapshotEnvelope original, Map<Integer, byte[]> segments) {
+        java.util.Map<Integer, byte[]> reduced = new java.util.LinkedHashMap<>(segments);
+        reduced.remove(Segment.MAPS);
+        reduced.remove(Segment.PDC);
+        if (reduced.containsKey(Segment.INVENTORY) || reduced.containsKey(Segment.ENDER_CHEST)) {
+            // Strip the embedded map colours from the copies, never from the live items.
+            ItemStack[] inventory = reduced.containsKey(Segment.INVENTORY)
+                    ? deserializeQuietly(reduced.get(Segment.INVENTORY)) : null;
+            ItemStack[] ender = reduced.containsKey(Segment.ENDER_CHEST)
+                    ? deserializeQuietly(reduced.get(Segment.ENDER_CHEST)) : null;
+            if (inventory != null) {
+                NmsBridge.stripEmbeddedMaps(inventory);
+                reduced.put(Segment.INVENTORY, ItemStack.serializeItemsAsBytes(inventory));
+            }
+            if (ender != null) {
+                NmsBridge.stripEmbeddedMaps(ender);
+                reduced.put(Segment.ENDER_CHEST, ItemStack.serializeItemsAsBytes(ender));
+            }
+        }
+        try {
+            return new SnapshotEnvelope(original.schemaVersion(), original.dataVersion(), reduced);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static ItemStack[] deserializeQuietly(byte[] payload) {
+        try {
+            return ItemStack.deserializeItemsFromBytes(payload);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Serializes an item array, retrying once without embedded map colour data when the payload does
+     * not fit the segment limit. Embedded map colours are optional (the MAPS segment carries the
+     * authoritative copy), so degrading them is better than failing the whole snapshot.
+     */
+    private static byte[] serializeWithinLimit(ItemStack[] items, String label) {
+        byte[] encoded = ItemStack.serializeItemsAsBytes(items);
+        if (encoded.length <= Protocol.MAX_SEGMENT_BYTES) {
+            return encoded;
+        }
+        ItemStack[] stripped = new ItemStack[items.length];
+        for (int i = 0; i < items.length; i++) {
+            stripped[i] = items[i] == null ? null : items[i].clone();
+        }
+        NmsBridge.stripEmbeddedMaps(stripped);
+        byte[] fallback = ItemStack.serializeItemsAsBytes(stripped);
+        if (fallback.length > Protocol.MAX_SEGMENT_BYTES) {
+            throw new IllegalStateException(label + " segment is too large even without embedded maps: "
+                    + fallback.length + " bytes");
+        }
+        return fallback;
     }
 
     @FunctionalInterface

@@ -9,7 +9,7 @@ import org.bukkit.plugin.Plugin;
  */
 public final class PluginSchedulers {
 
-    private static final boolean FOLIA = classExists("io.papermc.paper.threadedregions.RegionizedServer");
+    private static final boolean FOLIA = detectFolia();
 
     private PluginSchedulers() {
     }
@@ -31,8 +31,12 @@ public final class PluginSchedulers {
     }
 
     public static void runDelayed(Plugin plugin, Player player, Runnable action, long delayTicks) {
+        runDelayed(plugin, player, action, null, delayTicks);
+    }
+
+    public static void runDelayed(Plugin plugin, Player player, Runnable action, Runnable retired, long delayTicks) {
         if (FOLIA) {
-            player.getScheduler().runDelayed(plugin, task -> action.run(), null, Math.max(1L, delayTicks));
+            player.getScheduler().runDelayed(plugin, task -> action.run(), retired, Math.max(1L, delayTicks));
         } else {
             Bukkit.getScheduler().runTaskLater(plugin, action, Math.max(1L, delayTicks));
         }
@@ -63,9 +67,22 @@ public final class PluginSchedulers {
         }
     }
 
-    private static boolean classExists(String name) {
+    /**
+     * Folia detection through the brand API, with the old marker class as a fallback. Relying on the
+     * internal class name alone silently reported "Paper" when the class moved, and the resulting
+     * BukkitScheduler calls throw on Folia.
+     */
+    private static boolean detectFolia() {
         try {
-            Class.forName(name);
+            io.papermc.paper.ServerBuildInfo buildInfo = io.papermc.paper.ServerBuildInfo.buildInfo();
+            if (buildInfo.isBrandCompatible(net.kyori.adventure.key.Key.key("papermc", "folia"))) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+            // Older or non-Paper runtime: fall back to the marker class.
+        }
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
             return true;
         } catch (ClassNotFoundException e) {
             return false;

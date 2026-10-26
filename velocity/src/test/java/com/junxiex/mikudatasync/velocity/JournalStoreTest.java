@@ -22,6 +22,11 @@ class JournalStoreTest {
     @TempDir
     Path tempDir;
 
+    private static JournalStore newStore(Path path, long compactionThresholdBytes) throws Exception {
+        return new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, compactionThresholdBytes,
+                org.slf4j.LoggerFactory.getLogger("journal-test"));
+    }
+
     private static SnapshotMessage message(long seq, int value) throws Exception {
         SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 5023,
                 Map.of(Segment.CORE, new byte[] {(byte) value}));
@@ -32,13 +37,13 @@ class JournalStoreTest {
     void appendAndReplay() throws Exception {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
-        try (JournalStore store = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore store = newStore(path, Long.MAX_VALUE)) {
             store.append(uuid, message(1, 1), true);
             store.append(uuid, message(2, 2), false);
             assertNotNull(store.get(uuid));
             assertEquals(2L, store.get(uuid).seq());
         }
-        try (JournalStore store = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore store = newStore(path, Long.MAX_VALUE)) {
             assertEquals(2L, store.get(uuid).seq());
             assertEquals(1, store.trackedPlayers());
         }
@@ -48,7 +53,7 @@ class JournalStoreTest {
     void corruptTailIsTruncated() throws Exception {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
-        try (JournalStore store = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore store = newStore(path, Long.MAX_VALUE)) {
             store.append(uuid, message(1, 1), true);
         }
         try (var channel = java.nio.channels.FileChannel.open(path, java.nio.file.StandardOpenOption.WRITE,
@@ -56,7 +61,7 @@ class JournalStoreTest {
             channel.write(java.nio.ByteBuffer.wrap(new byte[] {1, 2, 3, 4, 5, 6, 7, 8}));
         }
         long before = Files.size(path);
-        try (JournalStore store = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore store = newStore(path, Long.MAX_VALUE)) {
             assertEquals(1L, store.get(uuid).seq());
             assertEquals(1, store.trackedPlayers());
         }
@@ -67,7 +72,7 @@ class JournalStoreTest {
     void compactionKeepsLatestSnapshot() throws Exception {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
-        try (JournalStore store = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, 1L)) {
+        try (JournalStore store = newStore(path, 1L)) {
             for (int i = 1; i <= 20; i++) {
                 store.append(uuid, message(i, i), false);
             }
@@ -76,7 +81,7 @@ class JournalStoreTest {
             assertTrue(store.size() < before);
             assertEquals(20L, store.get(uuid).seq());
         }
-        try (JournalStore store = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore store = newStore(path, Long.MAX_VALUE)) {
             assertEquals(20L, store.get(uuid).seq());
         }
     }
@@ -84,7 +89,7 @@ class JournalStoreTest {
     @Test
     void missingUuidReturnsNull() throws Exception {
         Path path = tempDir.resolve("journal.mds");
-        try (JournalStore store = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE)) {
+        try (JournalStore store = newStore(path, Long.MAX_VALUE)) {
             assertNull(store.get(UUID.randomUUID()));
         }
     }

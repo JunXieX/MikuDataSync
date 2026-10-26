@@ -8,8 +8,10 @@ plugins {
 }
 
 allprojects {
-    group = "com.junxiex"
-    version = "1.5.1"
+    // Single source of truth: gradle.properties. A missing property fails the build instead of
+    // silently producing an "unspecified" version.
+    group = providers.gradleProperty("group").get()
+    version = providers.gradleProperty("version").get()
 
     repositories {
         mavenCentral()

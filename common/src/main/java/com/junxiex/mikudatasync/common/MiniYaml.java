@@ -98,12 +98,19 @@ public final class MiniYaml {
         return -1;
     }
 
+    /** Wraps a scalar so callers can recover the exact text; the typed value is unchanged. */
+    private static Object raw(String text, Object parsed) {
+        return new RawScalar(text, parsed);
+    }
+
     private static Object parseScalar(String value) throws ConfigException {
         if (value.length() >= 2 && value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"') {
-            return unescapeDoubleQuoted(value.substring(1, value.length() - 1));
+            String text = unescapeDoubleQuoted(value.substring(1, value.length() - 1));
+            return raw(text, parseQuoted(text));
         }
         if (value.length() >= 2 && value.charAt(0) == '\'' && value.charAt(value.length() - 1) == '\'') {
-            return value.substring(1, value.length() - 1).replace("''", "'");
+            String text = value.substring(1, value.length() - 1).replace("''", "'");
+            return raw(text, parseQuoted(text));
         }
         if (value.equals("[]")) {
             return new ArrayList<>();
@@ -111,6 +118,29 @@ public final class MiniYaml {
         if (value.equals("{}")) {
             return new LinkedHashMap<String, Object>();
         }
+        if (value.equalsIgnoreCase("true")) {
+            return raw(value, Boolean.TRUE);
+        }
+        if (value.equalsIgnoreCase("false")) {
+            return raw(value, Boolean.FALSE);
+        }
+        try {
+            return raw(value, Long.parseLong(value));
+        } catch (NumberFormatException ignored) {
+        }
+        try {
+            return raw(value, Double.parseDouble(value));
+        } catch (NumberFormatException ignored) {
+        }
+        return raw(value, value);
+    }
+
+    /**
+     * Quoted scalars keep their string type except for the two YAML booleans and plain integers,
+     * which users routinely quote ("true", "2097152"). Without this a quoted number silently falls
+     * back to the default value in getInt/getBoolean.
+     */
+    private static Object parseQuoted(String value) {
         if (value.equalsIgnoreCase("true")) {
             return Boolean.TRUE;
         }
@@ -120,12 +150,8 @@ public final class MiniYaml {
         try {
             return Long.parseLong(value);
         } catch (NumberFormatException ignored) {
+            return value;
         }
-        try {
-            return Double.parseDouble(value);
-        } catch (NumberFormatException ignored) {
-        }
-        return value;
     }
 
     private static String unescapeDoubleQuoted(String value) {
@@ -146,21 +172,6 @@ public final class MiniYaml {
         return builder.toString();
     }
 
-    @SuppressWarnings("unchecked")
-    public static Map<String, Object> section(Map<String, Object> root, String path) {
-        Object current = root;
-        for (String part : path.split("[.]")) {
-            if (!(current instanceof Map<?, ?> map)) {
-                return null;
-            }
-            current = map.get(part);
-            if (current == null) {
-                return null;
-            }
-        }
-        return current instanceof Map<?, ?> map ? (Map<String, Object>) map : null;
-    }
-
     public static Object value(Map<String, Object> root, String path) {
         Object current = root;
         for (String part : path.split("[.]")) {
@@ -172,7 +183,23 @@ public final class MiniYaml {
                 return null;
             }
         }
-        return current;
+        // Scalars are stored wrapped so the original text stays available; accessors see the value.
+        return current instanceof RawScalar scalar ? scalar.parsed() : current;
+    }
+
+    /** Original text of a scalar, or null when the path is missing or not a scalar. */
+    public static String rawText(Map<String, Object> root, String path) {
+        Object current = root;
+        for (String part : path.split("[.]")) {
+            if (!(current instanceof Map<?, ?> map)) {
+                return null;
+            }
+            current = map.get(part);
+            if (current == null) {
+                return null;
+            }
+        }
+        return current instanceof RawScalar scalar ? scalar.text() : null;
     }
 
     public static String getString(Map<String, Object> root, String path, String defaultValue) {
@@ -180,23 +207,68 @@ public final class MiniYaml {
         return value == null ? defaultValue : String.valueOf(value);
     }
 
+    /**
+     * Reads a scalar as the exact text that was written. parseScalar normalises numbers, so a numeric
+     * secret like {@code 0012345} would come back as {@code 12345}; this accessor keeps the original.
+     */
+    public static String getRawString(Map<String, Object> root, String path, String defaultValue) {
+        String text = rawText(root, path);
+        if (text != null) {
+            return text;
+        }
+        Object value = value(root, path);
+        return value == null ? defaultValue : String.valueOf(value);
+    }
+
+    /** Original text of a scalar that was also parsed into a typed value. */
+    public record RawScalar(String text, Object parsed) {
+    }
+
     public static int getInt(Map<String, Object> root, String path, int defaultValue) {
         Object value = value(root, path);
-        return value instanceof Number number ? number.intValue() : defaultValue;
+        if (value instanceof Number number) {
+            long asLong = number.longValue();
+            // A value outside int range is a configuration mistake; report the default instead of
+            // silently truncating it into a plausible but wrong number.
+            return asLong < Integer.MIN_VALUE || asLong > Integer.MAX_VALUE ? defaultValue : (int) asLong;
+        }
+        if (value instanceof String text) {
+            try {
+                return Integer.parseInt(text.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return defaultValue;
     }
 
     public static long getLong(Map<String, Object> root, String path, long defaultValue) {
         Object value = value(root, path);
-        return value instanceof Number number ? number.longValue() : defaultValue;
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return defaultValue;
     }
 
     public static boolean getBoolean(Map<String, Object> root, String path, boolean defaultValue) {
         Object value = value(root, path);
-        return value instanceof Boolean bool ? bool : defaultValue;
-    }
-
-    public static List<?> getList(Map<String, Object> root, String path) {
-        Object value = value(root, path);
-        return value instanceof List<?> list ? list : List.of();
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof String text) {
+            String trimmed = text.trim();
+            if (trimmed.equalsIgnoreCase("true")) {
+                return true;
+            }
+            if (trimmed.equalsIgnoreCase("false")) {
+                return false;
+            }
+        }
+        return defaultValue;
     }
 }

@@ -1,16 +1,17 @@
 package com.junxiex.mikudatasync.paper;
 
+import com.junxiex.mikudatasync.common.AdvancementList;
 import com.junxiex.mikudatasync.common.AttributeList;
 import com.junxiex.mikudatasync.common.CoreData;
 import com.junxiex.mikudatasync.common.EffectList;
 import com.junxiex.mikudatasync.common.Metrics;
-import com.junxiex.mikudatasync.common.MapDataList;
 import com.junxiex.mikudatasync.common.MiscData;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.Segment;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.StageMetrics;
+import com.junxiex.mikudatasync.common.StatisticsList;
 import com.junxiex.mikudatasync.paper.api.MikuDataSyncApplyEvent;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -28,22 +29,23 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Applies a decoded snapshot on the server thread. All segments are decoded before the first
- * mutation so a malformed snapshot cannot leave the player half updated.
+ * Applies a decoded snapshot on the server thread. {@link #prepare(SnapshotEnvelope)} decodes every
+ * segment up front so a malformed snapshot is rejected before the first mutation; apply() only
+ * writes.
  */
 public final class ApplyService {
 
-    private final org.bukkit.plugin.Plugin plugin;
     private final PaperConfig config;
 
-    public ApplyService(org.bukkit.plugin.Plugin plugin, PaperConfig config) {
-        this.plugin = plugin;
+    public ApplyService(PaperConfig config) {
         this.config = config;
     }
 
     public record Prepared(SnapshotEnvelope envelope, CoreData core, List<EffectList.Entry> effects,
                            List<AttributeList.Entry> attributes, ItemStack[] inventory, ItemStack[] enderChest,
-                           MiscData misc, byte[] pdc, byte[] advancements, byte[] statistics, byte[] maps) {
+                           ItemStack cursorItem, byte[] pdc,
+                           List<AdvancementList.Entry> advancements,
+                           List<StatisticsList.Entry> statistics, byte[] maps) {
     }
 
     /** Decodes the snapshot off the entity thread; apply() then only performs mutations. */
@@ -66,11 +68,27 @@ public final class ApplyService {
         ItemStack[] enderChest = envelope.hasSegment(Segment.ENDER_CHEST)
                 ? decodeItems(envelope.segment(Segment.ENDER_CHEST), 27) : null;
         MiscData misc = envelope.hasSegment(Segment.MISC) ? MiscData.decode(envelope.segment(Segment.MISC)) : null;
+        // Advancements and statistics must be decoded here as well: decoding them inside apply()
+        // would throw after inventory/PDC/health were already overwritten, leaving a half-applied
+        // player that is then kicked and repeats the same failure on every reconnect.
+        List<AdvancementList.Entry> advancements = envelope.hasSegment(Segment.ADVANCEMENTS)
+                ? AdvancementList.decode(envelope.segment(Segment.ADVANCEMENTS)) : null;
+        List<StatisticsList.Entry> statistics = envelope.hasSegment(Segment.STATISTICS)
+                ? StatisticsList.decode(envelope.segment(Segment.STATISTICS)) : null;
+        // The cursor item is decoded here as well: deserialising it inside apply() threw after the
+        // inventory and health were already overwritten, which is exactly the half-applied state this
+        // method is supposed to rule out.
+        ItemStack cursorItem = null;
+        if (misc != null && misc.hasCursorItem()) {
+            cursorItem = ItemStack.deserializeBytes(misc.cursorItem());
+            if (cursorItem.getType().isAir()) {
+                cursorItem = null;
+            }
+        }
         byte[] maps = envelope.segment(Segment.MAPS);
         StageMetrics.record("apply.decode", System.nanoTime() - stageStart);
-        return new Prepared(envelope, core, effects, attributes, inventory, enderChest, misc,
-                envelope.segment(Segment.PDC), envelope.segment(Segment.ADVANCEMENTS),
-                envelope.segment(Segment.STATISTICS), maps);
+        return new Prepared(envelope, core, effects, attributes, inventory, enderChest, cursorItem,
+                envelope.segment(Segment.PDC), advancements, statistics, maps);
     }
 
     public void apply(Player player, SnapshotEnvelope envelope) throws Exception {
@@ -84,10 +102,9 @@ public final class ApplyService {
         List<AttributeList.Entry> attributes = prepared.attributes();
         ItemStack[] inventory = prepared.inventory();
         ItemStack[] enderChest = prepared.enderChest();
-        MiscData misc = prepared.misc();
         byte[] pdc = prepared.pdc();
-        byte[] advancements = prepared.advancements();
-        byte[] statistics = prepared.statistics();
+        List<AdvancementList.Entry> advancements = prepared.advancements();
+        List<StatisticsList.Entry> statistics = prepared.statistics();
         byte[] maps = prepared.maps();
 
         long start = System.nanoTime();
@@ -154,6 +171,12 @@ public final class ApplyService {
             int slot = Math.max(0, Math.min(8, core.heldSlot()));
             player.getInventory().setHeldItemSlot(slot);
         }
+        // Cursor item is folded into the inventory right after the inventory write: it is the only
+        // loss-free representation across menu transitions, and doing it here means a later failure
+        // in the optional segments cannot drop it.
+        if (prepared.cursorItem() != null) {
+            applyCursorItem(player, prepared.cursorItem());
+        }
         StageMetrics.record("apply.inventory", System.nanoTime() - stageStart);
         if (maps != null) {
             try {
@@ -176,45 +199,47 @@ public final class ApplyService {
             }
         }
         StageMetrics.record("apply.pdc", System.nanoTime() - stageStart);
+        // Advancements and statistics are NMS-reflective and non-critical: a failure here must not
+        // abort the apply after the inventory was already written, because the player would then be
+        // kicked on every reconnect with no way out.
         stageStart = System.nanoTime();
         if (advancements != null) {
-            NmsBridge.applyAdvancements(player, advancements, config.advancementStrict());
+            try {
+                NmsBridge.applyAdvancements(player, advancements, config.advancementStrict());
+            } catch (Throwable t) {
+                // Degraded, not failed: the apply completes and the player keeps playing. Counting it as
+                // a failure would make "apply n" and "apply failed" both increase for one login.
+                Bukkit.getLogger().warning("Failed to apply advancements for " + player.getName() + ": " + t);
+            }
         }
         StageMetrics.record("apply.advancements", System.nanoTime() - stageStart);
         stageStart = System.nanoTime();
         if (statistics != null) {
-            NmsBridge.applyStatistics(player, statistics);
+            try {
+                NmsBridge.applyStatistics(player, statistics);
+            } catch (Throwable t) {
+                Bukkit.getLogger().warning("Failed to apply statistics for " + player.getName() + ": " + t);
+            }
         }
         StageMetrics.record("apply.statistics", System.nanoTime() - stageStart);
         stageStart = System.nanoTime();
+        // The cursor item is folded into the inventory here rather than one tick later: the delayed
+        // variant lost the item whenever the player disconnected inside that tick, because the quit
+        // capture then overwrote the snapshot without it.
         player.updateInventory();
         StageMetrics.record("apply.flush", System.nanoTime() - stageStart);
         Metrics.recordApply(System.nanoTime() - start);
     }
 
     /**
-     * Cursor slot is restored one tick after join: Paper's join sequence resets the menu carried
-     * slot after PlayerJoinEvent, so setting it during the event is lost.
+     * The vanilla cursor slot lives on the current menu and is discarded when a new container opens,
+     * so the cursor item is moved into the inventory: that is the only loss-free representation
+     * across arbitrary menu transitions.
      */
-    public void applyCursor(Player player, SnapshotEnvelope envelope) {
-        if (!envelope.hasSegment(Segment.MISC)) {
-            return;
-        }
-        try {
-            MiscData misc = MiscData.decode(envelope.segment(Segment.MISC));
-            if (!misc.hasCursorItem()) {
-                return;
-            }
-            // The vanilla cursor slot lives on the current menu and is discarded/returned when a
-            // new container opens; putting the item into the inventory is the only loss-free
-            // representation across arbitrary menu transitions.
-            ItemStack cursor = ItemStack.deserializeBytes(misc.cursorItem());
-            var leftover = player.getInventory().addItem(cursor);
-            for (ItemStack item : leftover.values()) {
-                player.getWorld().dropItemNaturally(player.getLocation(), item);
-            }
-        } catch (Exception e) {
-            throw new IllegalStateException("failed to restore cursor item", e);
+    private void applyCursorItem(Player player, ItemStack cursor) {
+        var leftover = player.getInventory().addItem(cursor);
+        for (ItemStack item : leftover.values()) {
+            player.getWorld().dropItemNaturally(player.getLocation(), item);
         }
     }
 
@@ -226,6 +251,12 @@ public final class ApplyService {
         ItemStack[] decoded = ItemStack.deserializeItemsFromBytes(payload);
         if (decoded == null) {
             throw new ProtocolException("empty item array");
+        }
+        if (decoded.length > expectedSlots) {
+            // A longer array means the snapshot was written by a different slot layout; dropping the
+            // extras silently would lose items without a trace.
+            Bukkit.getLogger().warning("Snapshot carries " + decoded.length + " item slots but this "
+                    + "server expects " + expectedSlots + "; extra slots are ignored");
         }
         ItemStack[] out = new ItemStack[expectedSlots];
         System.arraycopy(decoded, 0, out, 0, Math.min(decoded.length, expectedSlots));

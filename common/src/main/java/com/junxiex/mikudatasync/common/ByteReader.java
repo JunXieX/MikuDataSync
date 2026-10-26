@@ -68,34 +68,26 @@ public final class ByteReader {
 
     public int readVarInt() throws ProtocolException {
         int value = 0;
-        int shift = 0;
-        while (true) {
+        for (int shift = 0; shift < 32; shift += 7) {
             int current = readByte();
             value |= (current & 0x7F) << shift;
             if ((current & 0x80) == 0) {
                 return value;
             }
-            shift += 7;
-            if (shift > 35) {
-                throw new ProtocolException("varint is too long");
-            }
         }
+        throw new ProtocolException("varint is too long");
     }
 
     public long readVarLong() throws ProtocolException {
         long value = 0L;
-        int shift = 0;
-        while (true) {
+        for (int shift = 0; shift < 64; shift += 7) {
             int current = readByte();
             value |= (long) (current & 0x7F) << shift;
             if ((current & 0x80) == 0) {
                 return value;
             }
-            shift += 7;
-            if (shift > 70) {
-                throw new ProtocolException("varlong is too long");
-            }
         }
+        throw new ProtocolException("varlong is too long");
     }
 
     public byte[] readBytes(int length) throws ProtocolException {

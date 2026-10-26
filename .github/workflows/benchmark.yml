@@ -12,21 +12,22 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
 
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: current
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
 
       - name: Run codec benchmark
-        run: gradle :benchmark:run --no-daemon --stacktrace
+        run: ./gradlew :benchmark:run --no-daemon --stacktrace
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: codec-benchmark
           path: benchmark/build/benchmark-results.txt

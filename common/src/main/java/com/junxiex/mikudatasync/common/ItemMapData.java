@@ -3,7 +3,7 @@ package com.junxiex.mikudatasync.common;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Persisted locked-map payload stored inside the item itself (HuskSync-style). */
+/** Persisted locked-map payload stored inside the item itself. */
 public record ItemMapData(String originServer, int sourceMapId, byte scale,
                           int centerX, int centerZ, boolean locked, byte[] colors,
                           List<CursorData> cursors) {

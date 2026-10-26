@@ -15,6 +15,8 @@ public final class Metrics {
     private static final AtomicLong GATES = new AtomicLong();
     private static final AtomicLong GATE_LAST = new AtomicLong();
     private static final AtomicLong GATE_MAX = new AtomicLong();
+    private static final AtomicLong CAPTURE_FAILURES = new AtomicLong();
+    private static final AtomicLong APPLY_FAILURES = new AtomicLong();
 
     private Metrics() {
     }
@@ -25,6 +27,18 @@ public final class Metrics {
 
     public static void recordApply(long nanos) {
         record(APPLIES, APPLY_LAST, APPLY_MAX, nanos);
+    }
+
+    /**
+     * Failures are counted separately: mixing them into the success distribution made "capture n"
+     * mean "attempts" and let slow failure paths poison the max latency reading.
+     */
+    public static void recordCaptureFailure() {
+        CAPTURE_FAILURES.incrementAndGet();
+    }
+
+    public static void recordApplyFailure() {
+        APPLY_FAILURES.incrementAndGet();
     }
 
     public static void recordGate(long nanos) {
@@ -41,13 +55,15 @@ public final class Metrics {
     }
 
     public static String captureSummary() {
-        return String.format(Locale.ROOT, "capture n=%d last=%.2fms max=%.2fms",
-                CAPTURES.get(), CAPTURE_LAST.get() / 1_000_000.0, CAPTURE_MAX.get() / 1_000_000.0);
+        return String.format(Locale.ROOT, "capture n=%d failed=%d last=%.2fms max=%.2fms",
+                CAPTURES.get(), CAPTURE_FAILURES.get(),
+                CAPTURE_LAST.get() / 1_000_000.0, CAPTURE_MAX.get() / 1_000_000.0);
     }
 
     public static String applySummary() {
-        return String.format(Locale.ROOT, "apply n=%d last=%.2fms max=%.2fms",
-                APPLIES.get(), APPLY_LAST.get() / 1_000_000.0, APPLY_MAX.get() / 1_000_000.0);
+        return String.format(Locale.ROOT, "apply n=%d failed=%d last=%.2fms max=%.2fms",
+                APPLIES.get(), APPLY_FAILURES.get(),
+                APPLY_LAST.get() / 1_000_000.0, APPLY_MAX.get() / 1_000_000.0);
     }
 
     public static String gateSummary() {

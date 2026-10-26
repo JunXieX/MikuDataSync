@@ -6,7 +6,6 @@ import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
-import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.velocity.BackupService;
 import com.junxiex.mikudatasync.velocity.IpcServer;
 import com.junxiex.mikudatasync.velocity.MikuDataSyncVelocity;
@@ -23,6 +22,32 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 public final class MdsCommand implements SimpleCommand {
+
+    private static final String DEFAULT_PERMISSION = "mikudatasync.admin";
+
+    /**
+     * Admin file work (backup write, restore read, backup listing) gets its own thread: sharing the
+     * journal commit executor would let one large backup delay every player's switch.
+     */
+    private final java.util.concurrent.ExecutorService adminIo = java.util.concurrent.Executors.newSingleThreadExecutor(
+            runnable -> {
+                Thread thread = new Thread(runnable, "mds-admin-io");
+                thread.setDaemon(true);
+                return thread;
+            });
+
+    private void runAdmin(Runnable task) {
+        try {
+            adminIo.execute(task);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            plugin.logger().warn("Admin file task rejected; the proxy is shutting down");
+        }
+    }
+
+    /** Stops the admin file thread when the proxy shuts down. */
+    public void close() {
+        adminIo.shutdown();
+    }
 
     private final MikuDataSyncVelocity plugin;
     private final ProxyServer server;
@@ -43,8 +68,13 @@ public final class MdsCommand implements SimpleCommand {
 
     @Override
     public boolean hasPermission(Invocation invocation) {
-        return config.commandPermission().isEmpty()
-                || invocation.source().hasPermission(config.commandPermission());
+        // An empty node means "no restriction was configured"; it no longer defaults to open, so a
+        // stock install cannot be used by players to back up and restore their own state.
+        String permission = config.commandPermission();
+        if (permission == null || permission.isBlank()) {
+            permission = DEFAULT_PERMISSION;
+        }
+        return invocation.source().hasPermission(permission);
     }
 
     @Override
@@ -63,9 +93,11 @@ public final class MdsCommand implements SimpleCommand {
                             + " | journal=" + store.journalStatus()
                             + " | fsync=" + config.fsyncMode()));
             case "doctor" -> source.sendMessage(Component.text(
-                    "ok: config loaded | ipc=" + (ipcServer.isRunning() ? "up" : "down")
+                    (plugin.startFailure() == null ? "ok: config loaded"
+                            : "FAILED to start: " + plugin.startFailure())
+                            + " | ipc=" + (ipcServer == null ? "down" : ipcServer.isRunning() ? "up" : "down")
                             + " | failMode=" + config.failMode()
-                            + " | journal=" + store.journalStatus()));
+                            + " | journal=" + (store == null ? "disabled" : store.journalStatus())));
             case "switch" -> switchServer(source, arguments);
             case "backup" -> backup(source, arguments);
             case "backups" -> listBackups(source);
@@ -135,17 +167,25 @@ public final class MdsCommand implements SimpleCommand {
                         source.sendMessage(Component.text("Backup failed: " + error.getMessage()));
                         return;
                     }
-                    try {
-                        SnapshotMessage message = SnapshotMessage.decode(frame.payload());
-                        var file = backups.write(target.getUniqueId(), target.getUsername(), message);
-                        source.sendMessage(Component.text("Backup written (live capture): " + file.getFileName()));
-                    } catch (Exception e) {
-                        source.sendMessage(Component.text("Backup failed: " + e.getMessage()));
-                    }
+                    // The callback runs on the backend reader thread; backup writes fsync, so it
+                    // goes to the disk executor instead of stalling that backend's frame loop.
+                    runAdmin(() -> {
+                        try {
+                            SnapshotMessage message = SnapshotMessage.decode(frame.payload());
+                            var file = backups.write(target.getUniqueId(), target.getUsername(), message);
+                            source.sendMessage(Component.text("Backup written (live capture): " + file.getFileName()));
+                        } catch (Exception e) {
+                            source.sendMessage(Component.text("Backup failed: " + e.getMessage()));
+                        }
+                    });
                 });
     }
 
     private void listBackups(CommandSource source) {
+        runAdmin(() -> listBackupsOnDisk(source));
+    }
+
+    private void listBackupsOnDisk(CommandSource source) {
         try {
             var files = backups.list();
             if (files.isEmpty()) {
@@ -162,9 +202,6 @@ public final class MdsCommand implements SimpleCommand {
         }
     }
 
-    private static final java.util.regex.Pattern UUID_IN_NAME = java.util.regex.Pattern.compile(
-            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
-
     private void restore(CommandSource source, String[] arguments) {
         if (arguments.length < 3) {
             source.sendMessage(Component.text("Usage: /mds restore <player> <backup-file>"));
@@ -176,38 +213,41 @@ public final class MdsCommand implements SimpleCommand {
             return;
         }
         var target = player.get();
-        var nameMatcher = UUID_IN_NAME.matcher(arguments[2]);
-        if (nameMatcher.find() && !nameMatcher.group().equalsIgnoreCase(target.getUniqueId().toString())) {
+        // A backup must belong to the target player. The old check only ran when the file name
+        // happened to contain a UUID, so any other name skipped it entirely.
+        if (!BackupService.belongsTo(arguments[2], target.getUniqueId())) {
             source.sendMessage(Component.text("Backup belongs to another player"));
             return;
         }
-        try {
-            SnapshotMessage message = backups.read(arguments[2]);
-            SnapshotEnvelope parsed = SnapshotEnvelope.decode(message.envelope());
-            if (parsed.schemaVersion() > Protocol.SCHEMA_VERSION) {
-                throw new IllegalStateException("backup schema is newer than this build");
+        runAdmin(() -> {
+            try {
+                SnapshotMessage message = backups.read(arguments[2]);
+                SnapshotEnvelope parsed = SnapshotEnvelope.decode(message.envelope());
+                if (parsed.schemaVersion() > Protocol.SCHEMA_VERSION) {
+                    throw new IllegalStateException("backup schema is newer than this build");
+                }
+                long seq = store.commit(target.getUniqueId(), message);
+                var current = target.getCurrentServer();
+                if (current.isEmpty()) {
+                    source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
+                            + "; player has no backend, applies on next join"));
+                    return;
+                }
+                ipcServer.request(current.get().getServerInfo().getName(), Opcode.RESTORE_APPLY,
+                                IpcPayloads.putRequest(target.getUniqueId(), message), 5000L)
+                        .whenComplete((frame, error) -> {
+                            if (error != null) {
+                                source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
+                                        + " in store, but apply failed: " + error.getMessage()
+                                        + " (will retry on next join)"));
+                            } else {
+                                source.sendMessage(Component.text("Restored and applied " + arguments[1]
+                                        + " at seq " + seq));
+                            }
+                        });
+            } catch (Exception e) {
+                source.sendMessage(Component.text("Restore failed: " + e.getMessage()));
             }
-            long seq = store.commit(target.getUniqueId(), message);
-            var current = target.getCurrentServer();
-            if (current.isEmpty()) {
-                source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
-                        + "; player has no backend, applies on next join"));
-                return;
-            }
-            ipcServer.request(current.get().getServerInfo().getName(), Opcode.RESTORE_APPLY,
-                            IpcPayloads.putRequest(target.getUniqueId(), message), 5000L)
-                    .whenComplete((frame, error) -> {
-                        if (error != null) {
-                            source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
-                                    + " in store, but apply failed: " + error.getMessage()
-                                    + " (will retry on next join)"));
-                        } else {
-                            source.sendMessage(Component.text("Restored and applied " + arguments[1]
-                                    + " at seq " + seq));
-                        }
-                    });
-        } catch (Exception e) {
-            source.sendMessage(Component.text("Restore failed: " + e.getMessage()));
-        }
+        });
     }
 }

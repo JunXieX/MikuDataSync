@@ -49,8 +49,10 @@ class IpcServerTest {
     @BeforeEach
     void setUp() throws Exception {
         VelocityConfig config = new VelocityConfig("127.0.0.1", 0, SECRET, "data/journal.mds",
-                VelocityConfig.FsyncMode.NEVER, 50, 2000, 300, "closed", 30, 1 << 20, 60000, false, 20, "");
-        journal = new JournalStore(tempDir.resolve("journal.mds"), VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE);
+                VelocityConfig.FsyncMode.NEVER, 50, 2000, 2000, "closed", 30, 1 << 20, 60000, false, 20, "",
+                64L << 20, 256L << 20, null);
+        journal = new JournalStore(tempDir.resolve("journal.mds"), VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE,
+                LoggerFactory.getLogger("test"));
         store = new SnapshotStore(1 << 20, journal);
         server = new IpcServer(LoggerFactory.getLogger("test"), config, store, Set.of(SERVER_ID));
         server.start();

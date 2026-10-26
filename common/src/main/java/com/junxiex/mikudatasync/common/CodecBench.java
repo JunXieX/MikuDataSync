@@ -16,10 +16,16 @@ public final class CodecBench {
     }
 
     public static Result run(int warmupIterations, int measureIterations) {
+        return run(warmupIterations, measureIterations, () -> {
+        });
+    }
+
+    private static Result run(int warmupIterations, int measureIterations, Runnable tick) {
         SnapshotEnvelope envelope = sampleEnvelope();
         try {
             for (int i = 0; i < warmupIterations; i++) {
                 SnapshotEnvelope.decode(envelope.encode());
+                tick.run();
             }
             int payloadBytes = envelope.encode().length;
             long[] samples = new long[measureIterations];
@@ -27,6 +33,7 @@ public final class CodecBench {
                 long start = System.nanoTime();
                 SnapshotEnvelope.decode(envelope.encode());
                 samples[i] = System.nanoTime() - start;
+                tick.run();
             }
             Arrays.sort(samples);
             long p50 = samples[measureIterations / 2];

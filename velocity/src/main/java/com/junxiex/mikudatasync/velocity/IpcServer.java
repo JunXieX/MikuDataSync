@@ -32,6 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -42,6 +43,12 @@ public final class IpcServer implements AutoCloseable {
 
     private static final long HANDSHAKE_WINDOW_MS = 30_000L;
 
+    /** Timeout for the HELLO frame only; a peer that never sends it must not hold a worker. */
+    private static final int HANDSHAKE_TIMEOUT_MS = 5_000;
+
+    /** Hard cap on concurrent backend connections (one per backend server in practice). */
+    private static final int MAX_CONNECTIONS = 64;
+
     private final Logger logger;
     private final VelocityConfig config;
     private final SnapshotStore store;
@@ -50,9 +57,28 @@ public final class IpcServer implements AutoCloseable {
     private final Map<String, Connection> connections = new ConcurrentHashMap<>();
     private final Map<Long, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private final Map<UUID, CompletableFuture<Void>> pendingFlushes = new ConcurrentHashMap<>();
+    /** Commits that landed after their request had already timed out (see wasCommitted). */
+    private final Map<UUID, Long> lateCommits = new ConcurrentHashMap<>();
+    /** Start time of the handoff currently in flight for a player, used to attribute late PUTs. */
+    private final Map<UUID, Long> flushRequests = new ConcurrentHashMap<>();
     private final AtomicLong requestIds = new AtomicLong();
+    private final AtomicInteger connectionCount = new AtomicInteger();
     private final ExecutorService workers = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable, "mds-ipc-worker");
+        thread.setDaemon(true);
+        return thread;
+    });
+    /**
+     * Replies run on their own pool: the reader threads are blocked in socket reads and never return
+     * on shutdown, so sharing a pool with them would make the drain below drop queued acknowledgements.
+     */
+    private final ExecutorService repliers = Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(runnable, "mds-ipc-reply");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final ExecutorService diskIo = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "mds-ipc-disk");
         thread.setDaemon(true);
         return thread;
     });
@@ -76,6 +102,11 @@ public final class IpcServer implements AutoCloseable {
         acceptThread.setDaemon(true);
         acceptThread.start();
         logger.info("MikuDataSync IPC listening on {}:{}", config.bindHost(), config.bindPort());
+        if (!config.bindHost().startsWith("127.") && !"localhost".equalsIgnoreCase(config.bindHost())
+                && !"::1".equals(config.bindHost())) {
+            logger.warn("IPC is bound to {}; restrict it to a private network and keep protocol.secret private",
+                    config.bindHost());
+        }
     }
 
     public int boundPort() {
@@ -84,6 +115,53 @@ public final class IpcServer implements AutoCloseable {
 
     public boolean isRunning() {
         return serverSocket != null && !serverSocket.isClosed();
+    }
+
+    /** True while a backend with this server id holds an authenticated connection. */
+    public boolean isConnected(String serverId) {
+        return connections.containsKey(serverId);
+    }
+
+    /**
+     * Resolves whether the handoff that just failed actually reached the store. Only two facts can
+     * prove it: a commit that landed after its request had already timed out, or a commit whose
+     * capture sequence matches the handoff that was in flight for this player. A snapshot left over
+     * from an earlier switch must never count, or the cursor item would be handed out twice.
+     */
+    public boolean wasCommitted(String serverId, UUID uuid) {
+        Long handoffStart = flushRequests.remove(uuid);
+        if (lateCommits.remove(uuid) != null) {
+            return true;
+        }
+        if (handoffStart == null) {
+            // No handoff was in flight for this player, so nothing of this switch can be in the store.
+            return false;
+        }
+        try {
+            SnapshotStore.Entry entry = store.get(uuid);
+            if (entry == null || entry.seq() <= 0L || !serverId.equals(entry.sourceServer())
+                    || !"switch".equalsIgnoreCase(entry.saveCause())) {
+                return false;
+            }
+            // Only a switch record written after this handoff started may count. An older switch
+            // record would make the caller hand the cursor item out twice.
+            return entry.updatedAt() >= handoffStart;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Runs {@code task} after every commit queued so far has finished (used by the abort path). When
+     * the disk executor is already shut down the task runs on the caller's thread: it only reads the
+     * store, so it cannot deadlock against a commit.
+     */
+    public void afterPendingCommits(Runnable task) {
+        try {
+            diskIo.execute(task);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            task.run();
+        }
     }
 
     public void send(String serverId, Opcode opcode, byte[] payload) {
@@ -106,14 +184,16 @@ public final class IpcServer implements AutoCloseable {
         }
         long requestId = requestIds.incrementAndGet();
         CompletableFuture<Frame> future = new CompletableFuture<>();
-        pendingRequests.put(requestId, new PendingRequest(serverId, future));
-        CompletableFuture<Void> flush = null;
+        pendingRequests.put(requestId, new PendingRequest(connection, serverId, future));
         if (opcode == Opcode.FLUSH_REQ) {
             try {
                 UUID uuid = IpcPayloads.parseUuid(payload);
-                flush = new CompletableFuture<>();
-                CompletableFuture<Void> registered = flush;
+                CompletableFuture<Void> registered = new CompletableFuture<>();
                 pendingFlushes.put(uuid, registered);
+                // Remember when this handoff started: a PUT that arrives after the gate timed out
+                // still has to be attributed to it, and only a snapshot written after this instant
+                // can be the one that carries the cursor item.
+                flushRequests.put(uuid, System.currentTimeMillis());
                 future.whenComplete((frame, error) -> {
                     pendingFlushes.remove(uuid, registered);
                     if (error != null) {
@@ -133,15 +213,59 @@ public final class IpcServer implements AutoCloseable {
             return future;
         }
         return future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-                .whenComplete((frame, error) -> pendingRequests.remove(requestId));
+                .whenComplete((frame, error) -> {
+                    pendingRequests.remove(requestId);
+                    if (error != null && opcode == Opcode.FLUSH_REQ) {
+                        // A timed-out handoff must not leave its start time behind; the abort path
+                        // reads it back and would otherwise attribute a much later commit to it.
+                        try {
+                            flushRequests.remove(IpcPayloads.parseUuid(payload));
+                        } catch (ProtocolException ignored) {
+                        }
+                    }
+                });
+    }
+
+    /** Runs blocking disk work off the backend reader threads. */
+    public void runOnDisk(Runnable task) {
+        try {
+            diskIo.execute(task);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            logger.fine("Disk executor is closed; dropping task");
+        }
+    }
+
+    /** Queues a reply on a worker thread so socket writes never block the disk executor. */
+    private void reply(Connection connection, Runnable task, long requestId) {
+        try {
+            repliers.execute(task);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            // The frame cannot be written any more, but the waiting request still has to be settled
+            // or it hangs until its own timeout.
+            logger.fine("Worker pool is closed; settling request {} without a reply", requestId);
+            failPending(requestId, new IOException("proxy is shutting down"));
+        }
     }
 
     private void acceptLoop() {
         while (!closed.get()) {
             try {
                 Socket socket = serverSocket.accept();
+                if (connectionCount.incrementAndGet() > MAX_CONNECTIONS) {
+                    connectionCount.decrementAndGet();
+                    logger.warn("Rejecting IPC connection from {}: connection limit reached",
+                            socket.getRemoteSocketAddress());
+                    socket.close();
+                    continue;
+                }
                 socket.setTcpNoDelay(true);
-                workers.execute(() -> handle(socket));
+                workers.execute(() -> {
+                    try {
+                        handle(socket);
+                    } finally {
+                        connectionCount.decrementAndGet();
+                    }
+                });
             } catch (IOException e) {
                 if (!closed.get()) {
                     logger.warn("IPC accept failed", e);
@@ -153,7 +277,7 @@ public final class IpcServer implements AutoCloseable {
     private void handle(Socket socket) {
         Connection connection = null;
         try (socket) {
-            socket.setSoTimeout(config.readTimeoutMs());
+            socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
             DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
 
@@ -164,9 +288,12 @@ public final class IpcServer implements AutoCloseable {
             }
             String serverId = authenticate(hello.payload());
             if (serverId == null) {
-                send(out, Opcode.ERROR, hello.requestId(), errorPayload("authentication failed"));
+                send(out, Opcode.ERROR, hello.requestId(),
+                        errorPayload("authentication failed: check protocol.secret and that both sides run "
+                                + "protocol version " + Protocol.PROTOCOL_VERSION));
                 return;
             }
+            socket.setSoTimeout(config.readTimeoutMs());
 
             connection = new Connection(serverId, socket, out);
             Connection previous = connections.put(serverId, connection);
@@ -197,7 +324,7 @@ public final class IpcServer implements AutoCloseable {
             if (connection != null) {
                 connections.remove(connection.serverId(), connection);
                 connection.close();
-                failPendingForServer(connection.serverId());
+                failPendingForServer(connection);
                 logger.info("IPC backend disconnected: {}", connection.serverId());
             }
         }
@@ -208,9 +335,12 @@ public final class IpcServer implements AutoCloseable {
             ByteReader reader = new ByteReader(payload);
             int protocolVersion = reader.readInt();
             if (protocolVersion != Protocol.PROTOCOL_VERSION) {
+                logger.warn("IPC handshake rejected from '{}': protocol version {} does not match {}; "
+                        + "upgrade the proxy and every backend together", reader.readUtf(Protocol.MAX_SERVER_ID_BYTES),
+                        protocolVersion, Protocol.PROTOCOL_VERSION);
                 return null;
             }
-            String serverId = reader.readUtf(128);
+            String serverId = reader.readUtf(Protocol.MAX_SERVER_ID_BYTES);
             long timestamp = reader.readLong();
             String nonce = reader.readUtf(128);
             String hmac = reader.readUtf(256);
@@ -221,7 +351,12 @@ public final class IpcServer implements AutoCloseable {
                 return null;
             }
             String message = serverId + "|" + timestamp + "|" + nonce + "|" + protocolVersion;
-            return HmacAuth.verifyHex(config.secret(), message, hmac) ? serverId : null;
+            if (!HmacAuth.verifyHex(config.secret(), message, hmac)) {
+                logger.warn("IPC handshake rejected for '{}': HMAC mismatch (protocol.secret differs between "
+                        + "proxy and backend)", serverId);
+                return null;
+            }
+            return serverId;
         } catch (ProtocolException e) {
             return null;
         }
@@ -238,8 +373,10 @@ public final class IpcServer implements AutoCloseable {
                     sendSnapshot(connection, frame.requestId(), uuid);
                 } else {
                     long requestId = frame.requestId();
-                    flush.orTimeout(config.getWaitMs(), TimeUnit.MILLISECONDS)
-                            .whenComplete((ignored, error) -> {
+                    // Copy before adding a timeout: orTimeout completes the shared instance, which
+                    // would make every later GET on this player fail instantly and read stale data.
+                    CompletableFuture<Void> wait = flush.copy().orTimeout(config.getWaitMs(), TimeUnit.MILLISECONDS);
+                    wait.whenComplete((ignored, error) -> {
                                 try {
                                     sendSnapshot(connection, requestId, uuid);
                                 } catch (IOException e) {
@@ -251,15 +388,51 @@ public final class IpcServer implements AutoCloseable {
             case PUT -> {
                 UUID[] uuid = new UUID[1];
                 SnapshotMessage message = IpcPayloads.readPutRequest(frame.payload(), uuid);
-                try {
-                    long seq = store.commit(uuid[0], message);
-                    connection.send(Opcode.PUT_OK, frame.requestId(), IpcPayloads.putOk(seq));
-                    completePending(frame.requestId(), frame);
-                } catch (IOException e) {
-                    connection.send(Opcode.NACK, frame.requestId(),
-                            new NackMessage(uuid[0], 0L, "commit_failed", String.valueOf(e.getMessage())).encode());
-                    failPending(frame.requestId(), e);
-                }
+                long requestId = frame.requestId();
+                // Committing touches the journal (fsync for switch/quit), so it runs on the disk
+                // executor: doing it inline blocked this backend's reader thread, and a slow disk
+                // then delayed every other player's switch on the same backend.
+                runOnDisk(() -> {
+                    long seq;
+                    try {
+                        seq = store.commit(uuid[0], message);
+                    } catch (Exception e) {
+                        logger.warn("Snapshot commit failed for {}", uuid[0], e);
+                        // The reply must not be written from the disk thread: one blocked socket
+                        // would then serialise every other backend's commit behind it.
+                        reply(connection, () -> {
+                            try {
+                                connection.send(Opcode.NACK, requestId, new NackMessage(uuid[0], 0L,
+                                        "commit_failed", String.valueOf(e.getMessage())).encode());
+                            } catch (IOException sendFailure) {
+                                logger.warn("Failed to send NACK to {}", connection.serverId(), sendFailure);
+                            }
+                            failPending(requestId, e);
+                        }, requestId);
+                        return;
+                    }
+                    boolean waiting = pendingRequests.containsKey(requestId);
+                    if (!waiting && "switch".equalsIgnoreCase(message.saveCause())) {
+                        // The gate already timed out: nobody waits for this answer, but the commit
+                        // did land, so the abort path must not restore the cursor item.
+                        lateCommits.put(uuid[0], System.currentTimeMillis());
+                        // Age-bounded on every write: a stale mark for this player would otherwise be
+                        // consumed by a later, unrelated abort and report the wrong commit state.
+                        long cutoff = System.currentTimeMillis() - 60_000L;
+                        lateCommits.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+                        return;
+                    }
+                    long committedSeq = seq;
+                    flushRequests.remove(uuid[0]);
+                    reply(connection, () -> {
+                        try {
+                            connection.send(Opcode.PUT_OK, requestId, IpcPayloads.putOk(committedSeq));
+                        } catch (IOException e) {
+                            logger.warn("Failed to send PUT_OK to {}", connection.serverId(), e);
+                        }
+                        completePending(requestId, frame);
+                    }, requestId);
+                });
             }
             case ACK -> {
                 UUID[] uuid = new UUID[1];
@@ -283,7 +456,14 @@ public final class IpcServer implements AutoCloseable {
     }
 
     private void sendSnapshot(Connection connection, long requestId, UUID uuid) throws IOException {
-        SnapshotStore.Entry entry = store.get(uuid);
+        SnapshotStore.Entry entry;
+        try {
+            entry = store.get(uuid);
+        } catch (IOException e) {
+            logger.error("Stored snapshot for {} is unreadable; refusing to answer GET", uuid, e);
+            connection.send(Opcode.ERROR, requestId, errorPayload("stored snapshot is unreadable"));
+            return;
+        }
         byte[] response = entry == null
                 ? IpcPayloads.snapshotMissing()
                 : IpcPayloads.snapshotFound(new SnapshotMessage(entry.seq(), entry.captureSeq(),
@@ -308,12 +488,17 @@ public final class IpcServer implements AutoCloseable {
         }
     }
 
-    private void failPendingForServer(String serverId) {
+    /**
+     * Fails only the requests that belong to this connection. Matching on the server id alone would
+     * also kill requests issued by a newer connection that replaced this one during a reconnect.
+     */
+    private void failPendingForServer(Connection connection) {
         for (Long requestId : pendingRequests.keySet()) {
             PendingRequest pending = pendingRequests.get(requestId);
-            if (pending != null && pending.serverId().equals(serverId)) {
+            if (pending != null && pending.connection() == connection) {
                 pendingRequests.remove(requestId);
-                pending.future().completeExceptionally(new IOException("backend disconnected: " + serverId));
+                pending.future().completeExceptionally(
+                        new IOException("backend disconnected: " + connection.serverId()));
             }
         }
     }
@@ -335,11 +520,35 @@ public final class IpcServer implements AutoCloseable {
             } catch (IOException ignored) {
             }
         }
+        // Commits are drained before the sockets close: a commit that finished after its connection
+        // was closed would still persist the data but its acknowledgement would be lost.
+        diskIo.shutdown();
+        try {
+            if (!diskIo.awaitTermination(2, TimeUnit.SECONDS)) {
+                diskIo.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            diskIo.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        // Replies queued by the commits above still have to reach their backend, so the reply pool is
+        // drained before any socket is closed; otherwise the data is durable but the sender only sees
+        // a timeout.
+        repliers.shutdown();
+        try {
+            if (!repliers.awaitTermination(2, TimeUnit.SECONDS)) {
+                repliers.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            repliers.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
         connections.values().forEach(Connection::close);
+        // Reader threads are blocked in socket reads; closing the sockets above is what releases them.
         workers.shutdownNow();
     }
 
-    private record PendingRequest(String serverId, CompletableFuture<Frame> future) {
+    private record PendingRequest(Connection connection, String serverId, CompletableFuture<Frame> future) {
     }
 
     private static final class Connection {
