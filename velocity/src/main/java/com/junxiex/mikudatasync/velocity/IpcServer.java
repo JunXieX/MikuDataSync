@@ -278,15 +278,17 @@ public final class IpcServer implements AutoCloseable {
             socket.setSoTimeout(config.readTimeoutMs());
 
             connection = new Connection(serverId, socket, out);
-            // Written before the connection is published: a queued abort/GET reply would otherwise be
-            // able to interleave its bytes with this frame on the same stream.
-            connection.send(Opcode.HELLO_ACK, hello.requestId(), new ByteWriter(24)
-                    .writeInt(Protocol.PROTOCOL_VERSION)
-                    .writeUtf(nodeId.toString())
-                    .toByteArray());
-            Connection previous = connections.put(serverId, connection);
-            if (previous != null) {
-                previous.close();
+            // Published under the write lock: the handshake answer has to be the first frame on this
+            // stream, and the backend starts using the connection as soon as it reads that answer.
+            synchronized (connection) {
+                Connection previous = connections.put(serverId, connection);
+                connection.send(Opcode.HELLO_ACK, hello.requestId(), new ByteWriter(24)
+                        .writeInt(Protocol.PROTOCOL_VERSION)
+                        .writeUtf(nodeId.toString())
+                        .toByteArray());
+                if (previous != null) {
+                    previous.close();
+                }
             }
             if (!knownServers.isEmpty() && !knownServers.contains(serverId)) {
                 logger.warn("Backend server-id '{}' does not match any Velocity server name {}; switches to/from it will fail",
