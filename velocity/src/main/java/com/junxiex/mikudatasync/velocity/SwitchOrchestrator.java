@@ -55,15 +55,9 @@ public final class SwitchOrchestrator {
 
         long gateStart = System.nanoTime();
         CompletableFuture<Void> gate = new CompletableFuture<>();
-        CompletableFuture<Frame> request;
-        try {
-            request = ipcServer.request(sourceServer, Opcode.FLUSH_REQ, IpcPayloads.uuid(uuid),
-                    config.switchTimeoutMs());
-        } catch (Exception e) {
-            switching.remove(uuid);
-            handleFailure(event, player, sourceServer, e);
-            return null;
-        }
+        IpcServer.Handoff handoff = ipcServer.startHandoff(sourceServer, uuid, config.switchTimeoutMs());
+        long gateId = handoff.gateId();
+        CompletableFuture<Frame> request = handoff.future();
         request.whenComplete((frame, error) -> {
             try {
                 if (error != null) {
@@ -85,7 +79,7 @@ public final class SwitchOrchestrator {
                                 try {
                                     ipcServer.afterPendingCommits(() ->
                                             ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT,
-                                                    IpcPayloads.abort(uuid, isCommitted(uuid))));
+                                                    IpcPayloads.abort(uuid, isCommitted(uuid, gateId))));
                                 } finally {
                                     switching.remove(uuid);
                                 }
@@ -98,8 +92,8 @@ public final class SwitchOrchestrator {
         return EventTask.resumeWhenComplete(gate);
     }
 
-    private boolean isCommitted(UUID uuid) {
-        return ipcServer.wasCommitted(uuid);
+    private boolean isCommitted(UUID uuid, long gateId) {
+        return ipcServer.wasCommitted(uuid, gateId);
     }
 
     private void handleFailure(ServerPreConnectEvent event, Player player, String sourceServer, Throwable error) {
