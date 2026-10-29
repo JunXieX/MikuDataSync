@@ -593,7 +593,8 @@ public final class NmsBridge {
                         persisted == null ? mapServerId : persisted.originServer(),
                         persisted == null ? captured.mapId() : persisted.sourceMapId(),
                         captured.scale(), captured.centerX(), captured.centerZ(), captured.locked(),
-                        captured.colors().clone(),
+                        // The decoded array is not shared with the item and the renderer only reads it.
+                        captured.colors(),
                         persisted == null ? List.of() : persisted.cursors());
             }
             if (persisted == null) {

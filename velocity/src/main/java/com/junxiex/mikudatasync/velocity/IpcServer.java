@@ -201,8 +201,13 @@ public final class IpcServer implements AutoCloseable {
                     pendingFlushes.remove(uuid, registered);
                     flushRequestIds.remove(uuid, requestId);
                     if (error != null) {
+                        // A handoff that failed before its commit must not leave its start time behind:
+                        // the abort path reads it back to attribute a commit.
+                        flushRequests.remove(uuid);
                         registered.completeExceptionally(error);
                     } else {
+                        // Committed; the gate consumed the start time.
+                        flushRequests.remove(uuid);
                         registered.complete(null);
                     }
                 });
@@ -217,17 +222,7 @@ public final class IpcServer implements AutoCloseable {
             return future;
         }
         return future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-                .whenComplete((frame, error) -> {
-                    pendingRequests.remove(requestId);
-                    if (error != null && opcode == Opcode.FLUSH_REQ) {
-                        // A timed-out handoff must not leave its start time behind; the abort path
-                        // reads it back and would otherwise attribute a much later commit to it.
-                        try {
-                            flushRequests.remove(IpcPayloads.parseUuid(payload));
-                        } catch (ProtocolException ignored) {
-                        }
-                    }
-                });
+                .whenComplete((frame, error) -> pendingRequests.remove(requestId));
     }
 
     /** Runs blocking disk work off the backend reader threads. */
