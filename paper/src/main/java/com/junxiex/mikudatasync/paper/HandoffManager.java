@@ -25,8 +25,12 @@ public final class HandoffManager {
     /** Freeze window after a flush; the proxy aborts explicitly, this only bounds the worst case. */
     private static final long UNFREEZE_TICKS = 60L;
 
-    /** Budget for the PUT that carries the handoff snapshot. */
-    private static final long PUT_TIMEOUT_MS = 5_000L;
+    /**
+     * Budget for the PUT that carries the handoff snapshot. It has to stay below the unfreeze window:
+     * after the deadline the leftover is settled with {@code getNow}, which would otherwise treat a
+     * PUT that is still in flight as "not stored" and hand the cursor item out twice.
+     */
+    private static final long PUT_TIMEOUT_MS = 2_000L;
 
     private final Set<UUID> handoff = ConcurrentHashMap.newKeySet();
     private final java.util.Map<UUID, Carried> carriedItems = new ConcurrentHashMap<>();
@@ -196,6 +200,12 @@ public final class HandoffManager {
 
     private void captureAndRespond(Player player, long requestId) {
         UUID uuid = player.getUniqueId();
+        if (handoff.contains(uuid)) {
+            // A previous handoff for this player is still being settled. Serving this one too would
+            // overwrite its commit future and its carried cursor item.
+            ipcClient.respond(requestId, Opcode.ERROR, error("handoff already in progress"));
+            return;
+        }
         // The commit future is published together with the freeze: from this instant on, a quit that
         // runs clear() must see "commit pending" instead of "no commit", otherwise it would drop a
         // copy of the cursor item that the snapshot is about to store.
@@ -237,7 +247,7 @@ public final class HandoffManager {
         // The PUT is an ordinary backend request and its PUT_OK is what proves the snapshot holds
         // the cursor item; the proxy ties it to the gate by player UUID, not by request id.
         CompletableFuture<Frame> commit = ipcClient.request(Opcode.PUT,
-                IpcPayloads.putRequest(uuid, message), PUT_TIMEOUT_MS);
+                IpcPayloads.putRequest(uuid, message, requestId), PUT_TIMEOUT_MS);
         // The cursor item is released only when the commit result is known: a success means the
         // snapshot carries it (the local copy is discarded), a failure means nothing carries it (it is
         // handed back). Deciding earlier would duplicate the item or lose it.

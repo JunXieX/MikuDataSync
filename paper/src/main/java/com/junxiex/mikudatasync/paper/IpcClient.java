@@ -155,7 +155,9 @@ public final class IpcClient implements AutoCloseable {
                     Thread.currentThread().interrupt();
                     return;
                 }
-                backoffMs = Math.min(backoffMs * 2L, 30000L);
+                // Capped low: while the connection is down every login on this backend is refused, so
+                // the retry delay is also the maximum reconnect-denial window.
+                backoffMs = Math.min(backoffMs * 2L, 5_000L);
             }
         }
     }
@@ -214,30 +216,43 @@ public final class IpcClient implements AutoCloseable {
     }
 
     private void onFrame(Frame frame) {
-        CompletableFuture<Frame> future = pending.remove(frame.requestId());
-        if (future != null) {
-            // An ERROR frame that answers a request must fail it. Treating it as a normal response
-            // made a failed snapshot read look like "this player has no snapshot", which silently
-            // let the player join with stale data.
-            if (frame.opcode() == Opcode.NACK) {
-                try {
-                    NackMessage nack = NackMessage.decode(frame.payload());
-                    future.completeExceptionally(new IOException("backend NACK: " + nack.code() + " " + nack.message()));
-                } catch (ProtocolException e) {
-                    future.completeExceptionally(e);
+        // The opcode decides. A server-initiated request (flush, abort, restore, backup) can carry a
+        // request id that a local request is also using, and looking the id up first would swallow the
+        // request into the pending table as if it were that request's answer.
+        if (isReply(frame.opcode())) {
+            CompletableFuture<Frame> future = pending.remove(frame.requestId());
+            if (future != null) {
+                // An ERROR frame that answers a request must fail it. Treating it as a normal response
+                // made a failed snapshot read look like "this player has no snapshot", which silently
+                // let the player join with stale data.
+                if (frame.opcode() == Opcode.NACK) {
+                    try {
+                        NackMessage nack = NackMessage.decode(frame.payload());
+                        future.completeExceptionally(new IOException("backend NACK: " + nack.code()
+                                + " " + nack.message()));
+                    } catch (ProtocolException e) {
+                        future.completeExceptionally(e);
+                    }
+                } else if (frame.opcode() == Opcode.ERROR) {
+                    future.completeExceptionally(new IOException("backend error: " + readErrorMessage(frame.payload())));
+                } else {
+                    future.complete(frame);
                 }
-            } else if (frame.opcode() == Opcode.ERROR) {
-                future.completeExceptionally(new IOException("backend error: " + readErrorMessage(frame.payload())));
-            } else {
-                future.complete(frame);
+                return;
             }
-            return;
-        }
-        if (frame.opcode() == Opcode.ERROR) {
-            logger.warning("IPC error frame: " + readErrorMessage(frame.payload()));
-            return;
+            if (frame.opcode() == Opcode.ERROR) {
+                logger.warning("IPC error frame: " + readErrorMessage(frame.payload()));
+                return;
+            }
         }
         frameHandler.accept(frame);
+    }
+
+    private static boolean isReply(Opcode opcode) {
+        return switch (opcode) {
+            case SNAPSHOT, PUT_OK, PONG, NACK, ERROR, BACKUP_RES, RESTORE_RES -> true;
+            default -> false;
+        };
     }
 
     CompletableFuture<Frame> request(Opcode opcode, byte[] payload, long timeoutMs) {

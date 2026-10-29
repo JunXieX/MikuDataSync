@@ -6,7 +6,7 @@ public final class Protocol {
     /** "MDS1" */
     public static final int MAGIC = 0x4D445331;
 
-    public static final int PROTOCOL_VERSION = 2;
+    public static final int PROTOCOL_VERSION = 3;
     public static final int SCHEMA_VERSION = 2;
 
     /** Maximum size of one IPC frame (header included). */

@@ -114,7 +114,9 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         // independent of snapshot scheduling, so it runs even when periodic snapshots are disabled.
         PluginSchedulers.runTimer(this, () -> {
             if (mapBindings != null) {
-                mapBindings.flush();
+                // The flush rewrites the properties file; keeping it off the tick thread matters once
+                // the binding table has grown.
+                PluginSchedulers.runAsync(this, mapBindings::flush);
             }
         }, 100L, 100L);
         int seconds = config.periodicSnapshotSeconds();

@@ -27,6 +27,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -125,7 +126,8 @@ class IpcServerTest {
         // The backend allocates its own request id for the handoff PUT; the gate is matched by
         // player UUID, so echoing the FLUSH id is not what makes the gate pass.
         long putRequestId = flush.requestId() + 1000L;
-        FrameCodec.write(out, new Frame(Opcode.PUT, putRequestId, IpcPayloads.putRequest(uuid, message((byte) 3))));
+        FrameCodec.write(out, new Frame(Opcode.PUT, putRequestId,
+                IpcPayloads.putRequest(uuid, message((byte) 3), flush.requestId())));
         Frame ok = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
         assertEquals(Opcode.PUT_OK, ok.opcode());
         assertEquals(putRequestId, ok.requestId());
@@ -155,7 +157,8 @@ class IpcServerTest {
         Frame flush = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
         FrameCodec.write(out, new Frame(Opcode.GET, 77L, IpcPayloads.uuid(uuid)));
         Thread.sleep(150);
-        FrameCodec.write(out, new Frame(Opcode.PUT, 4242L, IpcPayloads.putRequest(uuid, message((byte) 5))));
+        FrameCodec.write(out, new Frame(Opcode.PUT, 4242L,
+                IpcPayloads.putRequest(uuid, message((byte) 5), flush.requestId())));
         // The gate completion (which releases the waiting GET) and the PUT_OK are written by different
         // threads, so only their presence is guaranteed, not their order.
         java.util.Set<Opcode> opcodes = new java.util.HashSet<>();
@@ -170,6 +173,47 @@ class IpcServerTest {
         }
         assertEquals(java.util.Set.of(Opcode.PUT_OK, Opcode.SNAPSHOT), opcodes);
         future.get(2, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void latePutFromAnOlderHandoffDoesNotReleaseTheCurrentGate() throws Exception {
+        UUID uuid = UUID.randomUUID();
+        CompletableFuture<Frame> first = server.request(SERVER_ID, Opcode.FLUSH_REQ,
+                IpcPayloads.uuid(uuid), 300L);
+        Frame firstFlush = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> first.get(2, TimeUnit.SECONDS));
+
+        CompletableFuture<Frame> second = server.request(SERVER_ID, Opcode.FLUSH_REQ,
+                IpcPayloads.uuid(uuid), 3000L);
+        Frame secondFlush = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
+
+        // The PUT that answers the first handoff arrives while the second gate is waiting.
+        FrameCodec.write(out, new Frame(Opcode.PUT, 5001L,
+                IpcPayloads.putRequest(uuid, message((byte) 6), firstFlush.requestId())));
+        assertEquals(Opcode.PUT_OK, FrameCodec.read(in, Protocol.MAX_FRAME_BYTES).opcode());
+        assertFalse(second.isDone(), "a stale handoff PUT must not release the current gate");
+
+        FrameCodec.write(out, new Frame(Opcode.PUT, 5002L,
+                IpcPayloads.putRequest(uuid, message((byte) 7), secondFlush.requestId())));
+        assertEquals(Opcode.PUT_OK, FrameCodec.read(in, Protocol.MAX_FRAME_BYTES).opcode());
+        second.get(2, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void latePutIsAttributedToTheHandoffThatTimedOut() throws Exception {
+        UUID uuid = UUID.randomUUID();
+        CompletableFuture<Frame> gate = server.request(SERVER_ID, Opcode.FLUSH_REQ,
+                IpcPayloads.uuid(uuid), 300L);
+        Frame flush = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> gate.get(2, TimeUnit.SECONDS));
+
+        FrameCodec.write(out, new Frame(Opcode.PUT, 6001L,
+                IpcPayloads.putRequest(uuid, message((byte) 9), flush.requestId())));
+        assertEquals(Opcode.PUT_OK, FrameCodec.read(in, Protocol.MAX_FRAME_BYTES).opcode());
+        assertTrue(server.wasCommitted(uuid));
+        assertFalse(server.wasCommitted(uuid), "the commit mark is consumed by one abort");
     }
 
     @Test

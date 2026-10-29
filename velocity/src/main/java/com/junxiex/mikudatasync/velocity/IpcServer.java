@@ -59,9 +59,10 @@ public final class IpcServer implements AutoCloseable {
     private final Map<UUID, CompletableFuture<Void>> pendingFlushes = new ConcurrentHashMap<>();
     /** Commits that landed after their request had already timed out (see wasCommitted). */
     private final Map<UUID, Long> lateCommits = new ConcurrentHashMap<>();
-    /** Start time of the handoff currently in flight for a player, used to attribute late PUTs. */
-    private final Map<UUID, Long> flushRequests = new ConcurrentHashMap<>();
-    /** Request id of the FLUSH_REQ that is still waiting for its handoff snapshot. */
+    /**
+     * Request id of the FLUSH_REQ still waiting for its handoff snapshot. The backend attaches this id
+     * to its PUT, so a commit is attributed to exactly the handoff it answers.
+     */
     private final Map<UUID, Long> flushRequestIds = new ConcurrentHashMap<>();
     private final AtomicLong requestIds = new AtomicLong();
     private final AtomicInteger connectionCount = new AtomicInteger();
@@ -130,27 +131,10 @@ public final class IpcServer implements AutoCloseable {
      * capture sequence matches the handoff that was in flight for this player. A snapshot left over
      * from an earlier switch must never count, or the cursor item would be handed out twice.
      */
-    public boolean wasCommitted(String serverId, UUID uuid) {
-        Long handoffStart = flushRequests.remove(uuid);
-        if (lateCommits.remove(uuid) != null) {
-            return true;
-        }
-        if (handoffStart == null) {
-            // No handoff was in flight for this player, so nothing of this switch can be in the store.
-            return false;
-        }
-        try {
-            SnapshotStore.Entry entry = store.get(uuid);
-            if (entry == null || entry.seq() <= 0L || !serverId.equals(entry.sourceServer())
-                    || !"switch".equalsIgnoreCase(entry.saveCause())) {
-                return false;
-            }
-            // Only a switch record written after this handoff started may count. An older switch
-            // record would make the caller hand the cursor item out twice.
-            return entry.updatedAt() >= handoffStart;
-        } catch (IOException e) {
-            return false;
-        }
+    public boolean wasCommitted(UUID uuid) {
+        boolean committed = lateCommits.remove(uuid) != null;
+        flushRequestIds.remove(uuid);
+        return committed;
     }
 
     /**
@@ -195,20 +179,19 @@ public final class IpcServer implements AutoCloseable {
                 // Remember when this handoff started: a PUT that arrives after the gate timed out
                 // still has to be attributed to it, and only a snapshot written after this instant
                 // can be the one that carries the cursor item.
-                flushRequests.put(uuid, System.currentTimeMillis());
                 flushRequestIds.put(uuid, requestId);
+                // An older late-commit mark belongs to a previous handoff and would otherwise be
+                // consumed by this one's abort.
+                lateCommits.remove(uuid);
                 future.whenComplete((frame, error) -> {
                     pendingFlushes.remove(uuid, registered);
-                    flushRequestIds.remove(uuid, requestId);
-                    if (error != null) {
-                        // A handoff that failed before its commit must not leave its start time behind:
-                        // the abort path reads it back to attribute a commit.
-                        flushRequests.remove(uuid);
-                        registered.completeExceptionally(error);
-                    } else {
-                        // Committed; the gate consumed the start time.
-                        flushRequests.remove(uuid);
+                    if (error == null) {
+                        // The gate consumed this handoff; nothing can be attributed to it any more.
+                        flushRequestIds.remove(uuid, requestId);
                         registered.complete(null);
+                    } else {
+                        // Kept for the abort that follows: it decides whether a late PUT arrived.
+                        registered.completeExceptionally(error);
                     }
                 });
             } catch (ProtocolException ignored) {
@@ -295,14 +278,16 @@ public final class IpcServer implements AutoCloseable {
             socket.setSoTimeout(config.readTimeoutMs());
 
             connection = new Connection(serverId, socket, out);
+            // Written before the connection is published: a queued abort/GET reply would otherwise be
+            // able to interleave its bytes with this frame on the same stream.
+            connection.send(Opcode.HELLO_ACK, hello.requestId(), new ByteWriter(24)
+                    .writeInt(Protocol.PROTOCOL_VERSION)
+                    .writeUtf(nodeId.toString())
+                    .toByteArray());
             Connection previous = connections.put(serverId, connection);
             if (previous != null) {
                 previous.close();
             }
-            send(out, Opcode.HELLO_ACK, hello.requestId(), new ByteWriter(24)
-                    .writeInt(Protocol.PROTOCOL_VERSION)
-                    .writeUtf(nodeId.toString())
-                    .toByteArray());
             if (!knownServers.isEmpty() && !knownServers.contains(serverId)) {
                 logger.warn("Backend server-id '{}' does not match any Velocity server name {}; switches to/from it will fail",
                         serverId, knownServers);
@@ -375,18 +360,21 @@ public final class IpcServer implements AutoCloseable {
                     // Copy before adding a timeout: orTimeout completes the shared instance, which
                     // would make every later GET on this player fail instantly and read stale data.
                     CompletableFuture<Void> wait = flush.copy().orTimeout(config.getWaitMs(), TimeUnit.MILLISECONDS);
-                    wait.whenComplete((ignored, error) -> {
-                                try {
-                                    sendSnapshot(connection, requestId, uuid);
-                                } catch (IOException e) {
-                                    logger.warn("Failed to send delayed snapshot response", e);
-                                }
-                            });
+                    // The wait completes on the disk or timeout thread; the reply is queued so one
+                    // blocked socket write cannot stall every commit behind it.
+                    wait.whenComplete((ignored, error) -> reply(connection, () -> {
+                        try {
+                            sendSnapshot(connection, requestId, uuid);
+                        } catch (IOException e) {
+                            logger.warn("Failed to send delayed snapshot response", e);
+                        }
+                    }, requestId));
                 }
             }
             case PUT -> {
                 UUID[] uuid = new UUID[1];
-                SnapshotMessage message = IpcPayloads.readPutRequest(frame.payload(), uuid);
+                long[] token = new long[1];
+                SnapshotMessage message = IpcPayloads.readPutRequest(frame.payload(), uuid, token);
                 UUID player = uuid[0];
                 long requestId = frame.requestId();
                 // Committing touches the journal (fsync for switch/quit), so it runs on the disk
@@ -398,10 +386,7 @@ public final class IpcServer implements AutoCloseable {
                         seq = store.commit(player, message);
                     } catch (Exception e) {
                         logger.warn("Snapshot commit failed for {}", player, e);
-                        Long gateId = flushRequestIds.remove(player);
-                        if (gateId != null) {
-                            failPending(gateId, e);
-                        }
+                        failHandoffGate(player, token[0], e);
                         // The reply must not be written from the disk thread: one blocked socket
                         // would then serialise every other backend's commit behind it.
                         reply(connection, () -> {
@@ -415,20 +400,7 @@ public final class IpcServer implements AutoCloseable {
                         return;
                     }
                     if ("switch".equalsIgnoreCase(message.saveCause())) {
-                        Long gateId = flushRequestIds.remove(player);
-                        if (gateId != null) {
-                            // The handoff snapshot is durable: release the gate that waits for it.
-                            completePending(gateId, frame);
-                        } else {
-                            // The gate already timed out, but the commit landed: the abort path must
-                            // not hand the cursor item back a second time.
-                            lateCommits.put(player, System.currentTimeMillis());
-                            // Age-bounded on every write: a stale mark for this player would otherwise
-                            // be consumed by a later, unrelated abort and report the wrong state.
-                            long cutoff = System.currentTimeMillis() - 60_000L;
-                            lateCommits.entrySet().removeIf(entry -> entry.getValue() < cutoff);
-                        }
-                        flushRequests.remove(player);
+                        completeHandoff(player, token[0], frame);
                     }
                     reply(connection, () -> {
                         try {
@@ -474,6 +446,37 @@ public final class IpcServer implements AutoCloseable {
                 : IpcPayloads.snapshotFound(new SnapshotMessage(entry.seq(), entry.captureSeq(),
                 entry.saveCause(), entry.sourceServer(), entry.envelope()));
         connection.send(Opcode.SNAPSHOT, requestId, response);
+    }
+
+    /** Fails the gate this PUT answers, never a different handoff that is waiting for its own PUT. */
+    private void failHandoffGate(UUID uuid, long token, Throwable error) {
+        Long gateId = flushRequestIds.get(uuid);
+        if (gateId == null || gateId != token) {
+            return;
+        }
+        flushRequestIds.remove(uuid, gateId);
+        failPending(gateId, error);
+    }
+
+    /**
+     * Releases the gate this PUT answers. A PUT carrying another handoff's token is still stored, but
+     * it can neither release nor misreport the gate that is waiting now; when the gate already timed
+     * out the commit is recorded so the abort that follows sees it.
+     */
+    private void completeHandoff(UUID uuid, long token, Frame frame) {
+        Long gateId = flushRequestIds.get(uuid);
+        if (gateId == null || gateId != token) {
+            return;
+        }
+        flushRequestIds.remove(uuid, gateId);
+        boolean waiting = pendingRequests.containsKey(gateId);
+        completePending(gateId, frame);
+        if (waiting) {
+            return;
+        }
+        lateCommits.put(uuid, System.currentTimeMillis());
+        long cutoff = System.currentTimeMillis() - 60_000L;
+        lateCommits.entrySet().removeIf(entry -> entry.getValue() < cutoff);
     }
 
     private void completePending(long requestId, Frame frame) {

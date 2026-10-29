@@ -72,16 +72,25 @@ public final class SwitchOrchestrator {
                     logger.info("Snapshot gate passed for {} (source={})", player.getUsername(), sourceServer);
                 }
             } finally {
-                if (error != null) {
+                if (error == null) {
+                    switching.remove(uuid);
+                } else {
                     // The backend may still be capturing and sending its PUT when the gate times out.
                     // The abort is therefore delayed by a short grace window and then evaluated after
-                    // the disk queue drains, so it reports the state the store actually reached.
+                    // the disk queue drains, so it reports the state the store actually reached. The
+                    // switch lock is held until that answer is sent: a retry in between would start a
+                    // second handoff whose gate the late PUT could be mistaken for.
                     CompletableFuture.delayedExecutor(ABORT_GRACE_MS, TimeUnit.MILLISECONDS)
-                            .execute(() -> ipcServer.afterPendingCommits(() ->
-                                    ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT,
-                                            IpcPayloads.abort(uuid, isCommitted(sourceServer, uuid)))));
+                            .execute(() -> {
+                                try {
+                                    ipcServer.afterPendingCommits(() ->
+                                            ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT,
+                                                    IpcPayloads.abort(uuid, isCommitted(uuid))));
+                                } finally {
+                                    switching.remove(uuid);
+                                }
+                            });
                 }
-                switching.remove(uuid);
                 Metrics.recordGate(System.nanoTime() - gateStart);
                 gate.complete(null);
             }
@@ -89,8 +98,8 @@ public final class SwitchOrchestrator {
         return EventTask.resumeWhenComplete(gate);
     }
 
-    private boolean isCommitted(String sourceServer, UUID uuid) {
-        return ipcServer.wasCommitted(sourceServer, uuid);
+    private boolean isCommitted(UUID uuid) {
+        return ipcServer.wasCommitted(uuid);
     }
 
     private void handleFailure(ServerPreConnectEvent event, Player player, String sourceServer, Throwable error) {

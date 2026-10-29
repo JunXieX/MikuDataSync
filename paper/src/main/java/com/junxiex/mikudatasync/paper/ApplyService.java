@@ -86,9 +86,23 @@ public final class ApplyService {
             }
         }
         byte[] maps = envelope.segment(Segment.MAPS);
+        byte[] pdc = envelope.segment(Segment.PDC);
+        if (pdc != null) {
+            // Parsed here so a malformed blob is rejected before the first mutation instead of
+            // throwing after the inventory was already overwritten and kicking on every reconnect.
+            ItemStack carrier = new ItemStack(Material.STONE);
+            var carrierMeta = carrier.getItemMeta();
+            if (carrierMeta == null) {
+                throw new ProtocolException("cannot validate snapshot pdc");
+            }
+            carrierMeta.getPersistentDataContainer().readFromBytes(pdc, true);
+        }
+        if (core != null) {
+            GameMode.valueOf(core.gameMode());
+        }
         StageMetrics.record("apply.decode", System.nanoTime() - stageStart);
         return new Prepared(envelope, core, effects, attributes, inventory, enderChest, cursorItem,
-                envelope.segment(Segment.PDC), advancements, statistics, maps);
+                pdc, advancements, statistics, maps);
     }
 
     public void apply(Player player, SnapshotEnvelope envelope) throws Exception {
@@ -110,7 +124,13 @@ public final class ApplyService {
         long start = System.nanoTime();
         long stageStart = System.nanoTime();
 
-        Bukkit.getPluginManager().callEvent(new MikuDataSyncApplyEvent(player, envelope));
+        try {
+            Bukkit.getPluginManager().callEvent(new MikuDataSyncApplyEvent(player, envelope));
+        } catch (RuntimeException e) {
+            // A broken listener in another plugin must not turn into a failed apply, which would kick
+            // the player on every reconnect for as long as the snapshot stays current.
+            Bukkit.getLogger().warning("MikuDataSyncApplyEvent listener failed: " + e);
+        }
         if (core != null) {
             player.setGameMode(GameMode.valueOf(core.gameMode()));
         }

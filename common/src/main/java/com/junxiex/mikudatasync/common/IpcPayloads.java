@@ -128,16 +128,32 @@ public final class IpcPayloads {
     }
 
     public static byte[] putRequest(UUID uuid, SnapshotMessage message) {
-        ByteWriter writer = new ByteWriter(32 + message.envelope().length);
+        return putRequest(uuid, message, 0L);
+    }
+
+    /**
+     * {@code handoffToken} is the FLUSH request id this PUT answers, 0 for captures that are not
+     * handoffs. It is what lets the proxy tell a late PUT from an earlier handoff apart from the one
+     * it is waiting for, without sharing a request-id space with the backend.
+     */
+    public static byte[] putRequest(UUID uuid, SnapshotMessage message, long handoffToken) {
+        ByteWriter writer = new ByteWriter(48 + message.envelope().length);
         writer.writeLong(uuid.getMostSignificantBits());
         writer.writeLong(uuid.getLeastSignificantBits());
+        writer.writeVarLong(handoffToken);
         writer.writeBytes(message.encode());
         return writer.toByteArray();
     }
 
     public static SnapshotMessage readPutRequest(byte[] payload, UUID[] uuidOut) throws ProtocolException {
+        return readPutRequest(payload, uuidOut, new long[1]);
+    }
+
+    public static SnapshotMessage readPutRequest(byte[] payload, UUID[] uuidOut, long[] tokenOut)
+            throws ProtocolException {
         ByteReader reader = new ByteReader(payload);
         uuidOut[0] = readUuid(reader);
+        tokenOut[0] = reader.readVarLong();
         return SnapshotMessage.decode(reader.readBytes(reader.remaining()));
     }
 }
