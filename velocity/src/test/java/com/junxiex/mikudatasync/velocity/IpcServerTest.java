@@ -156,10 +156,19 @@ class IpcServerTest {
         FrameCodec.write(out, new Frame(Opcode.GET, 77L, IpcPayloads.uuid(uuid)));
         Thread.sleep(150);
         FrameCodec.write(out, new Frame(Opcode.PUT, 4242L, IpcPayloads.putRequest(uuid, message((byte) 5))));
-        assertEquals(Opcode.PUT_OK, FrameCodec.read(in, Protocol.MAX_FRAME_BYTES).opcode());
-        Frame snapshot = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
-        assertEquals(Opcode.SNAPSHOT, snapshot.opcode());
-        assertNotNull(IpcPayloads.readSnapshotResponse(snapshot.payload()));
+        // The gate completion (which releases the waiting GET) and the PUT_OK are written by different
+        // threads, so only their presence is guaranteed, not their order.
+        java.util.Set<Opcode> opcodes = new java.util.HashSet<>();
+        for (int i = 0; i < 2; i++) {
+            Frame frame = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
+            opcodes.add(frame.opcode());
+            if (frame.opcode() == Opcode.PUT_OK) {
+                assertEquals(4242L, frame.requestId());
+            } else if (frame.opcode() == Opcode.SNAPSHOT) {
+                assertNotNull(IpcPayloads.readSnapshotResponse(frame.payload()));
+            }
+        }
+        assertEquals(java.util.Set.of(Opcode.PUT_OK, Opcode.SNAPSHOT), opcodes);
         future.get(2, TimeUnit.SECONDS);
     }
 
