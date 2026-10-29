@@ -240,7 +240,7 @@ public final class IpcClient implements AutoCloseable {
         frameHandler.accept(frame);
     }
 
-    private CompletableFuture<Frame> request(Opcode opcode, byte[] payload, long timeoutMs) {
+    CompletableFuture<Frame> request(Opcode opcode, byte[] payload, long timeoutMs) {
         if (state.get() != State.CONNECTED) {
             CompletableFuture<Frame> failed = new CompletableFuture<>();
             failed.completeExceptionally(new IOException("IPC is not connected"));
