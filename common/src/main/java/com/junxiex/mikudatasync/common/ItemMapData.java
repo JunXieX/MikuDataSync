@@ -30,8 +30,9 @@ public record ItemMapData(String originServer, int sourceMapId, byte scale,
             writer.writeByte(cursor.x());
             writer.writeByte(cursor.y());
             writer.writeByte(cursor.direction());
-            writer.writeUtf(cursor.type());
-            writer.writeUtf(cursor.caption() == null ? "" : cursor.caption());
+            // Same limits the reader uses: an over-long field would make the whole map blob unreadable.
+            writer.writeUtf(Utf8.clip(cursor.type(), 64));
+            writer.writeUtf(Utf8.clip(cursor.caption() == null ? "" : cursor.caption(), 256));
         }
         return writer.toByteArray();
     }

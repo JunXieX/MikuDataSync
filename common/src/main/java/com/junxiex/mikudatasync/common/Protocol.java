@@ -30,6 +30,9 @@ public final class Protocol {
     /** UTF-8 byte limit for SnapshotMessage.sourceServer and the IPC handshake server id. */
     public static final int MAX_SERVER_ID_BYTES = 128;
 
+    /** Secret shipped in both config.yml files; it is public, so it must be replaced on every install. */
+    public static final String PLACEHOLDER_SECRET = "please-change-this-secret-to-a-random-32-byte-string";
+
     private Protocol() {
     }
 }

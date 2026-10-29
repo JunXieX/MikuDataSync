@@ -18,9 +18,6 @@ public enum Opcode {
 
     PING(20),
     PONG(21),
-    STATS_REQ(22),
-    STATS_RES(23),
-    RESTORE_NOTICE(24),
     RESTORE_APPLY(25),
     BACKUP_REQ(26),
     BACKUP_RES(27),

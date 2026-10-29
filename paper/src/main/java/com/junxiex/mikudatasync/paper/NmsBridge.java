@@ -59,7 +59,10 @@ public final class NmsBridge {
     private static String mapServerId = "unknown";
     private static MapBindings mapBindings;
     private static final NamespacedKey MAP_ITEM_KEY = NamespacedKey.fromString("mikudatasync:map");
-    private static final Set<String> loggedFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Last warning time per map stage: version drift must stay visible without flooding the log. */
+    private static final Map<String, Long> loggedFailureTimes = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Serialises map-id allocation; two region threads would otherwise read the same counter. */
+    private static final Object MAP_ALLOCATION_LOCK = new Object();
 
     // --- data bridge (statistics + advancements) ---
     private static boolean dataAvailable;
@@ -88,10 +91,6 @@ public final class NmsBridge {
     private static Method craftAdvancementGetHandle;
 
     private NmsBridge() {
-    }
-
-    public static synchronized void initialize(Logger pluginLogger) {
-        initialize(pluginLogger, "unknown", null);
     }
 
     public static synchronized void initialize(Logger pluginLogger, String serverId, MapBindings bindings) {
@@ -435,7 +434,7 @@ public final class NmsBridge {
             byte[] colors = canvas.pixels();
             if (isAllZero(colors)) {
                 try {
-                    Object data = mapDataFor(inventory, meta.getMapId());
+                    Object data = mapDataFor(player, meta.getMapId());
                     if (data != null) {
                         byte[] nmsColors = (byte[]) mapColorsField.get(data);
                         if (nmsColors != null && nmsColors.length == colors.length) {
@@ -461,7 +460,7 @@ public final class NmsBridge {
             int centerZ = 0;
             boolean locked = view.isLocked();
             try {
-                Object data = mapDataFor(inventory, meta.getMapId());
+                Object data = mapDataFor(player, meta.getMapId());
                 if (data != null) {
                     scale = (byte) mapScaleField.get(data);
                     centerX = (int) mapCenterXField.get(data);
@@ -486,11 +485,15 @@ public final class NmsBridge {
         }
     }
 
-    /** Logs a map-bridge failure once per call site so version drift is visible without spam. */
+    /** Logs a map-bridge failure at most once per minute per stage: one hiccup must not hide later ones. */
     private static void logOnce(String stage, Throwable error) {
-        if (loggedFailures.add(stage)) {
-            logger.warning("Map bridge failure in " + stage + ": " + error);
+        long now = System.currentTimeMillis();
+        Long last = loggedFailureTimes.get(stage);
+        if (last != null && now - last < 60_000L) {
+            return;
         }
+        loggedFailureTimes.put(stage, now);
+        logger.warning("Map bridge failure in " + stage + ": " + error);
     }
 
     private static boolean isAllZero(byte[] data) {
@@ -502,10 +505,21 @@ public final class NmsBridge {
         return true;
     }
 
-    private static Object mapDataFor(org.bukkit.inventory.Inventory inventory, int id) {
+    /**
+     * Resolves the saved data for a map id. The player's own level is tried first: map ids are per
+     * level, and on Folia another region's level data is not this thread's to read.
+     */
+    private static Object mapDataFor(Player player, int id) {
         try {
+            Object data = mapData(player.getWorld(), id);
+            if (data != null || PluginSchedulers.isFolia()) {
+                return data;
+            }
             for (org.bukkit.World world : Bukkit.getWorlds()) {
-                Object data = mapData(world, id);
+                if (world.equals(player.getWorld())) {
+                    continue;
+                }
+                data = mapData(world, id);
                 if (data != null) {
                     return data;
                 }
@@ -547,7 +561,7 @@ public final class NmsBridge {
                 continue;
             }
             if (meta instanceof MapMeta mapMeta && mapMeta.hasMapId()) {
-                applySingleMap(item, mapMeta, inventory, i, fallback);
+                applySingleMap(player, item, mapMeta, inventory, i, fallback);
             } else if (meta instanceof org.bukkit.inventory.meta.BlockStateMeta blockState
                     && blockState.getBlockState() instanceof org.bukkit.block.Container container
                     && !container.getInventory().isEmpty()) {
@@ -565,28 +579,42 @@ public final class NmsBridge {
         }
     }
 
-    private static void applySingleMap(ItemStack item, MapMeta meta, org.bukkit.inventory.Inventory inventory,
-                                       int slot, java.util.Map<Integer, MapDataList.Entry> fallback) {
+    private static void applySingleMap(Player player, ItemStack item, MapMeta meta,
+                                       org.bukkit.inventory.Inventory inventory, int slot,
+                                       java.util.Map<Integer, MapDataList.Entry> fallback) {
         try {
             ItemMapData persisted = readItemMap(meta);
+            MapDataList.Entry captured = fallback.get(meta.getMapId());
+            if (captured != null) {
+                // The MAPS segment is rendered from the world state on every capture, while the
+                // embedded copy is written once per apply: the segment is the fresher colour source
+                // and the embedded copy only has to supply identity and cursors.
+                persisted = new ItemMapData(
+                        persisted == null ? mapServerId : persisted.originServer(),
+                        persisted == null ? captured.mapId() : persisted.sourceMapId(),
+                        captured.scale(), captured.centerX(), captured.centerZ(), captured.locked(),
+                        captured.colors().clone(),
+                        persisted == null ? List.of() : persisted.cursors());
+            }
             if (persisted == null) {
-                MapDataList.Entry entry = fallback.get(meta.getMapId());
-                if (entry == null) {
-                    return;
-                }
-                persisted = new ItemMapData(mapServerId, entry.mapId(), entry.scale(),
-                        entry.centerX(), entry.centerZ(), entry.locked(), entry.colors().clone());
+                return;
             }
             int targetId = mapBindings == null ? -1
                     : mapBindings.get(persisted.originServer(), persisted.sourceMapId());
             MapView view = targetId >= 0 ? Bukkit.getMap(targetId) : null;
             if (view == null) {
-                view = Bukkit.createMap(Bukkit.getWorlds().get(0));
-                if (mapBindings != null) {
-                    mapBindings.put(persisted.originServer(), persisted.sourceMapId(), view.getId());
+                synchronized (MAP_ALLOCATION_LOCK) {
+                    view = Bukkit.createMap(Bukkit.getWorlds().get(0));
+                    if (mapBindings != null) {
+                        mapBindings.put(persisted.originServer(), persisted.sourceMapId(), view.getId());
+                    }
                 }
             }
-            view.getRenderers().clear();
+            // getRenderers() returns a copy, so clearing it left every earlier renderer attached and
+            // each apply added one more to the same map.
+            for (org.bukkit.map.MapRenderer renderer : view.getRenderers()) {
+                view.removeRenderer(renderer);
+            }
             view.addRenderer(new MdsMapRenderer(persisted.colors(), persisted.cursors()));
             view.setLocked(true);
             view.setScale(MapView.Scale.values()[Math.max(0, Math.min(4, persisted.scale()))]);
@@ -610,7 +638,9 @@ public final class NmsBridge {
             MapView view = Bukkit.createMap(Bukkit.getWorlds().get(0));
             byte[] colors = new byte[MapDataList.COLORS_LENGTH];
             java.util.Arrays.fill(colors, (byte) 7);
-            view.getRenderers().clear();
+            for (org.bukkit.map.MapRenderer existing : view.getRenderers()) {
+                view.removeRenderer(existing);
+            }
             view.addRenderer(new MdsMapRenderer(colors, List.of(
                     new ItemMapData.CursorData((byte) 10, (byte) 20, (byte) 0, "BANNER_RED", "test"))));
             view.setLocked(true);
@@ -906,7 +936,9 @@ public final class NmsBridge {
                 for (Object criterion : completed) {
                     criteria.add(String.valueOf(criterion));
                 }
-                if (!criteria.isEmpty()) {
+                // An advancement with more criteria than the codec accepts must be skipped here:
+                // writing it would make the whole snapshot undecodable on the target server.
+                if (!criteria.isEmpty() && criteria.size() <= AdvancementList.MAX_CRITERIA) {
                     entries.add(new AdvancementList.Entry(id.toString(), criteria));
                 }
             }

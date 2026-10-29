@@ -294,7 +294,9 @@ public final class DebugCommand {
             MapView view = org.bukkit.Bukkit.createMap(player.getWorld());
             byte[] colors = new byte[MapDataList.COLORS_LENGTH];
             java.util.Arrays.fill(colors, (byte) 7);
-            view.getRenderers().clear();
+            for (var existing : view.getRenderers()) {
+                view.removeRenderer(existing);
+            }
             view.addRenderer(new MdsMapRenderer(colors, java.util.List.of(
                     new ItemMapData.CursorData((byte) 10, (byte) 20, (byte) 0, "BANNER_RED", "test"))));
             view.setLocked(true);

@@ -218,44 +218,38 @@ public final class JournalStore implements AutoCloseable {
                     newOffsets.put(entry.getKey(), written);
                     written += writeFully(out, record, written);
                 }
-                out.force(true);
-            }
-            synchronized (this) {
-                if (closed) {
-                    return;
-                }
-                channel.close();
-                try {
-                    Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                    Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING);
-                }
-                // Opened right after the move: if this fails the pending replay below never runs, so
-                // the failure must be treated as a broken journal instead of silently dropping records.
-                channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
-                latestOffsets.clear();
-                latestOffsets.putAll(newOffsets);
-                validLength = written;
-                try {
-                    replayPendingDuringCompaction();
-                } catch (IOException e) {
-                    // Half-written replay leaves offsets pointing at records that do not exist, which
-                    // would make every later read fail. Refuse further writes instead.
-                    broken = true;
-                    logger.error("Journal {} is unusable after a failed compaction replay; snapshots are "
-                            + "no longer persisted", path, e);
-                    throw e;
-                }
-                compacting = false;
-                // Pending records were just written into the new file and only exist in the page
-                // cache, so the dirty flag must stay set until the force below actually succeeds.
-                dirty.set(true);
-                try {
-                    channel.force(false);
+                // Records appended while the copy ran only exist in the old file, so they are copied
+                // into the replacement before it goes live: an acknowledged record must never depend
+                // on the file that is about to disappear.
+                synchronized (this) {
+                    if (closed) {
+                        return;
+                    }
+                    for (PendingRecord pending : pendingDuringCompaction) {
+                        newOffsets.put(pending.uuid(), written);
+                        written += writeFully(out, pending.record(), written);
+                    }
+                    out.force(true);
+                    // Windows refuses to replace a file that still has an open handle.
+                    source.close();
+                    out.close();
+                    channel.close();
+                    try {
+                        Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING,
+                                StandardCopyOption.ATOMIC_MOVE);
+                    } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                        Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    // Opened right after the move: a failure here is handled as a broken journal
+                    // instead of leaving offsets that point into a file that is no longer there.
+                    channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                    latestOffsets.clear();
+                    latestOffsets.putAll(newOffsets);
+                    validLength = written;
+                    pendingDuringCompaction.clear();
+                    compacting = false;
+                    // Everything in the replacement was forced above, so nothing is pending.
                     dirty.set(false);
-                } catch (IOException e) {
-                    dirty.set(true);
-                    logger.warn("Journal force after compaction failed for {}; the periodic fsync retries", path, e);
                 }
             }
             success = true;
@@ -277,14 +271,14 @@ public final class JournalStore implements AutoCloseable {
             } catch (IOException ignored) {
             }
             synchronized (this) {
-                // The file may already have been replaced by the temp copy; records appended during
-                // the compaction exist only in pendingDuringCompaction and must be replayed here too.
+                // The old file may already have been replaced; rebuilding the index from whichever
+                // file is in place is what makes the state consistent again.
                 if (!channel.isOpen()) {
                     try {
                         channel = FileChannel.open(path, StandardOpenOption.CREATE,
                                 StandardOpenOption.READ, StandardOpenOption.WRITE);
                         replay();
-                        replayPendingDuringCompaction();
+                        pendingDuringCompaction.clear();
                     } catch (IOException reopenFailure) {
                         broken = true;
                         logger.error("Journal {} could not be reopened after a failed compaction; "
@@ -305,18 +299,6 @@ public final class JournalStore implements AutoCloseable {
                 }
             }
         }
-    }
-
-    /** Re-appends records that were written while a compaction copy was in progress. */
-    private void replayPendingDuringCompaction() throws IOException {
-        for (PendingRecord pending : pendingDuringCompaction) {
-            long offset = validLength;
-            writeAt(pending.record(), offset);
-            validLength = offset + pending.record().length;
-            latestOffsets.put(pending.uuid(), offset);
-        }
-        pendingDuringCompaction.clear();
-        dirty.set(true);
     }
 
     private void replay() throws IOException {
@@ -481,7 +463,9 @@ public final class JournalStore implements AutoCloseable {
     @Override
     public synchronized void close() {
         closed = true;
-        fsyncExecutor.shutdownNow();
+        // Graceful shutdown: interrupt() would close the channel mid-force, and the final force
+        // below is what persists the last committed snapshot.
+        fsyncExecutor.shutdown();
         // force() before the isOpen check: an interrupted channel (shutdownNow elsewhere) is already
         // closed, and skipping the force would silently drop the last switch/quit snapshot. A closed
         // channel cannot be forced, so that case is reported as a real data-loss risk.

@@ -6,6 +6,9 @@ import java.util.List;
 /** Advancements segment: only advancements with at least one awarded criterion are transferred. */
 public final class AdvancementList {
 
+    /** Per-advancement ceiling; encode refuses more so a written snapshot can always be read back. */
+    public static final int MAX_CRITERIA = 256;
+
     public record Entry(String advancementKey, List<String> criteria) {
     }
 
@@ -16,6 +19,10 @@ public final class AdvancementList {
         ByteWriter writer = new ByteWriter(64 + entries.size() * 32);
         writer.writeVarInt(entries.size());
         for (Entry entry : entries) {
+            if (entry.criteria().size() > MAX_CRITERIA) {
+                throw new IllegalArgumentException("too many criteria for " + entry.advancementKey()
+                        + ": " + entry.criteria().size());
+            }
             writer.writeUtf(entry.advancementKey());
             writer.writeVarInt(entry.criteria().size());
             for (String criterion : entry.criteria()) {
@@ -35,7 +42,7 @@ public final class AdvancementList {
         for (int i = 0; i < count; i++) {
             String key = reader.readUtf(256);
             int criteriaCount = reader.readVarInt();
-            if (criteriaCount < 0 || criteriaCount > 256) {
+            if (criteriaCount < 0 || criteriaCount > MAX_CRITERIA) {
                 throw new ProtocolException("invalid criteria count: " + criteriaCount);
             }
             List<String> criteria = new ArrayList<>(criteriaCount);

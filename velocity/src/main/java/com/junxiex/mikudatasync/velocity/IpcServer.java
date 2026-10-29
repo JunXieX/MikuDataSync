@@ -61,6 +61,8 @@ public final class IpcServer implements AutoCloseable {
     private final Map<UUID, Long> lateCommits = new ConcurrentHashMap<>();
     /** Start time of the handoff currently in flight for a player, used to attribute late PUTs. */
     private final Map<UUID, Long> flushRequests = new ConcurrentHashMap<>();
+    /** Request id of the FLUSH_REQ that is still waiting for its handoff snapshot. */
+    private final Map<UUID, Long> flushRequestIds = new ConcurrentHashMap<>();
     private final AtomicLong requestIds = new AtomicLong();
     private final AtomicInteger connectionCount = new AtomicInteger();
     private final ExecutorService workers = Executors.newCachedThreadPool(runnable -> {
@@ -184,7 +186,7 @@ public final class IpcServer implements AutoCloseable {
         }
         long requestId = requestIds.incrementAndGet();
         CompletableFuture<Frame> future = new CompletableFuture<>();
-        pendingRequests.put(requestId, new PendingRequest(connection, serverId, future));
+        pendingRequests.put(requestId, new PendingRequest(connection, future));
         if (opcode == Opcode.FLUSH_REQ) {
             try {
                 UUID uuid = IpcPayloads.parseUuid(payload);
@@ -194,8 +196,10 @@ public final class IpcServer implements AutoCloseable {
                 // still has to be attributed to it, and only a snapshot written after this instant
                 // can be the one that carries the cursor item.
                 flushRequests.put(uuid, System.currentTimeMillis());
+                flushRequestIds.put(uuid, requestId);
                 future.whenComplete((frame, error) -> {
                     pendingFlushes.remove(uuid, registered);
+                    flushRequestIds.remove(uuid, requestId);
                     if (error != null) {
                         registered.completeExceptionally(error);
                     } else {
@@ -388,52 +392,55 @@ public final class IpcServer implements AutoCloseable {
             case PUT -> {
                 UUID[] uuid = new UUID[1];
                 SnapshotMessage message = IpcPayloads.readPutRequest(frame.payload(), uuid);
+                UUID player = uuid[0];
                 long requestId = frame.requestId();
-                // A proxy-initiated flush is registered in pendingRequests; a backend-initiated PUT
-                // (quit/periodic capture) is not and always expects its PUT_OK.
-                boolean proxyInitiated = pendingRequests.containsKey(requestId);
                 // Committing touches the journal (fsync for switch/quit), so it runs on the disk
                 // executor: doing it inline blocked this backend's reader thread, and a slow disk
                 // then delayed every other player's switch on the same backend.
                 runOnDisk(() -> {
                     long seq;
                     try {
-                        seq = store.commit(uuid[0], message);
+                        seq = store.commit(player, message);
                     } catch (Exception e) {
-                        logger.warn("Snapshot commit failed for {}", uuid[0], e);
+                        logger.warn("Snapshot commit failed for {}", player, e);
+                        Long gateId = flushRequestIds.remove(player);
+                        if (gateId != null) {
+                            failPending(gateId, e);
+                        }
                         // The reply must not be written from the disk thread: one blocked socket
                         // would then serialise every other backend's commit behind it.
                         reply(connection, () -> {
                             try {
-                                connection.send(Opcode.NACK, requestId, new NackMessage(uuid[0], 0L,
+                                connection.send(Opcode.NACK, requestId, new NackMessage(player, 0L,
                                         "commit_failed", String.valueOf(e.getMessage())).encode());
                             } catch (IOException sendFailure) {
                                 logger.warn("Failed to send NACK to {}", connection.serverId(), sendFailure);
                             }
-                            failPending(requestId, e);
                         }, requestId);
                         return;
                     }
-                    boolean waiting = pendingRequests.containsKey(requestId);
-                    if (proxyInitiated && !waiting) {
-                        // The gate already timed out: nobody waits for this answer, but the commit
-                        // did land, so the abort path must not restore the cursor item.
-                        lateCommits.put(uuid[0], System.currentTimeMillis());
-                        // Age-bounded on every write: a stale mark for this player would otherwise be
-                        // consumed by a later, unrelated abort and report the wrong commit state.
-                        long cutoff = System.currentTimeMillis() - 60_000L;
-                        lateCommits.entrySet().removeIf(entry -> entry.getValue() < cutoff);
-                        return;
+                    if ("switch".equalsIgnoreCase(message.saveCause())) {
+                        Long gateId = flushRequestIds.remove(player);
+                        if (gateId != null) {
+                            // The handoff snapshot is durable: release the gate that waits for it.
+                            completePending(gateId, frame);
+                        } else {
+                            // The gate already timed out, but the commit landed: the abort path must
+                            // not hand the cursor item back a second time.
+                            lateCommits.put(player, System.currentTimeMillis());
+                            // Age-bounded on every write: a stale mark for this player would otherwise
+                            // be consumed by a later, unrelated abort and report the wrong state.
+                            long cutoff = System.currentTimeMillis() - 60_000L;
+                            lateCommits.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+                        }
+                        flushRequests.remove(player);
                     }
-                    long committedSeq = seq;
-                    flushRequests.remove(uuid[0]);
                     reply(connection, () -> {
                         try {
-                            connection.send(Opcode.PUT_OK, requestId, IpcPayloads.putOk(committedSeq));
+                            connection.send(Opcode.PUT_OK, requestId, IpcPayloads.putOk(seq));
                         } catch (IOException e) {
                             logger.warn("Failed to send PUT_OK to {}", connection.serverId(), e);
                         }
-                        completePending(requestId, frame);
                     }, requestId);
                 });
             }
@@ -551,7 +558,7 @@ public final class IpcServer implements AutoCloseable {
         workers.shutdownNow();
     }
 
-    private record PendingRequest(Connection connection, String serverId, CompletableFuture<Frame> future) {
+    private record PendingRequest(Connection connection, CompletableFuture<Frame> future) {
     }
 
     private static final class Connection {

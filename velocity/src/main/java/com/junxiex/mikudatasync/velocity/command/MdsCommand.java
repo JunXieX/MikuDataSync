@@ -226,28 +226,37 @@ public final class MdsCommand implements SimpleCommand {
                 if (parsed.schemaVersion() > Protocol.SCHEMA_VERSION) {
                     throw new IllegalStateException("backup schema is newer than this build");
                 }
-                long seq = store.commit(target.getUniqueId(), message);
                 var current = target.getCurrentServer();
                 if (current.isEmpty()) {
-                    source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
-                            + "; player has no backend, applies on next join"));
+                    source.sendMessage(Component.text("Restore needs the player to be on a backend server"));
                     return;
                 }
+                // The snapshot must not become authoritative before the backend accepted it: committing
+                // first left an unappliable snapshot at the highest seq, and the pre-login fetch then
+                // refused every later login for that player.
                 ipcServer.request(current.get().getServerInfo().getName(), Opcode.RESTORE_APPLY,
                                 IpcPayloads.putRequest(target.getUniqueId(), message), 5000L)
                         .whenComplete((frame, error) -> {
                             if (error != null) {
-                                source.sendMessage(Component.text("Restored " + arguments[1] + " at seq " + seq
-                                        + " in store, but apply failed: " + error.getMessage()
-                                        + " (will retry on next join)"));
-                            } else {
-                                source.sendMessage(Component.text("Restored and applied " + arguments[1]
-                                        + " at seq " + seq));
+                                source.sendMessage(Component.text("Restore failed: " + error.getMessage()));
+                                return;
                             }
+                            runAdmin(() -> commitRestored(source, target, message, arguments[1]));
                         });
             } catch (Exception e) {
                 source.sendMessage(Component.text("Restore failed: " + e.getMessage()));
             }
         });
+    }
+
+    /** Records the applied backup so a later switch or rejoin starts from the restored state. */
+    private void commitRestored(CommandSource source, Player target, SnapshotMessage message, String name) {
+        try {
+            long seq = store.commit(target.getUniqueId(), message);
+            source.sendMessage(Component.text("Restored and applied " + name + " at seq " + seq));
+        } catch (Exception e) {
+            source.sendMessage(Component.text("Backup was applied on the backend but the snapshot commit "
+                    + "failed: " + e.getMessage()));
+        }
     }
 }

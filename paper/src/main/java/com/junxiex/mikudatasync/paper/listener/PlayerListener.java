@@ -22,9 +22,7 @@ import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
-import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -74,12 +72,9 @@ public final class PlayerListener implements Listener {
             if (message == null) {
                 return;
             }
+            // Version and segment validation lives in prepare(), which both the join and the
+            // restore path go through; repeating it here would only duplicate the guard.
             SnapshotEnvelope envelope = SnapshotEnvelope.decode(message.envelope());
-            if (envelope.dataVersion() != NmsBridge.dataVersion()) {
-                unavailable(event, "data version mismatch: snapshot=" + envelope.dataVersion()
-                        + ", local=" + NmsBridge.dataVersion());
-                return;
-            }
             ApplyService.Prepared prepared = applyService.prepare(envelope);
             if (!pendingSnapshots.put(uuid,
                     new PendingSnapshots.Pending(envelope, message.seq(), System.currentTimeMillis(), prepared))) {
@@ -95,15 +90,8 @@ public final class PlayerListener implements Listener {
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         PendingSnapshots.Pending pending = pendingSnapshots.remove(player.getUniqueId());
-        if (pending == null || pending.prepared() == null) {
-            // No snapshot was staged for this join (a brand-new player, or the staged entry was
-            // dropped). Entering with whatever the target server already holds would be a silent
-            // rollback, so it is treated exactly like "sync unavailable".
-            if (pendingSnapshots.takeDropped(player.getUniqueId())) {
-                com.junxiex.mikudatasync.common.Metrics.recordApplyFailure();
-                plugin.getLogger().severe("Snapshot for " + player.getName()
-                        + " was dropped before join (queue full or expired); the player is using local data");
-            }
+        if (pending == null) {
+            // Brand-new player: the proxy has no snapshot, so the local data stays authoritative.
             return;
         }
         try {

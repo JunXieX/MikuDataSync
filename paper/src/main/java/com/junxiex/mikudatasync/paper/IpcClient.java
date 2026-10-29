@@ -51,12 +51,6 @@ public final class IpcClient implements AutoCloseable {
     private final ExecutorService io;
     private final ExecutorService writer;
     private final ScheduledExecutorService timer;
-    /**
-     * High bit that marks an id as issued by the proxy. Local ids stay below it, so the two sources
-     * can never collide in the pending table.
-     */
-    private static final long PROXY_ID_BIT = 1L << 62;
-
     private final AtomicLong requestIds = new AtomicLong();
     private final ConcurrentHashMap<Long, CompletableFuture<Frame>> pending = new ConcurrentHashMap<>();
     private final AtomicReference<State> state = new AtomicReference<>(State.DISCONNECTED);
@@ -220,8 +214,6 @@ public final class IpcClient implements AutoCloseable {
     }
 
     private void onFrame(Frame frame) {
-        // Every frame we send carries the id we registered locally, so a reply always matches the
-        // pending key directly: local ids stay below PROXY_ID_BIT, proxy-issued ones above it.
         CompletableFuture<Frame> future = pending.remove(frame.requestId());
         if (future != null) {
             // An ERROR frame that answers a request must fail it. Treating it as a normal response
@@ -249,28 +241,19 @@ public final class IpcClient implements AutoCloseable {
     }
 
     private CompletableFuture<Frame> request(Opcode opcode, byte[] payload, long timeoutMs) {
-        return request(opcode, payload, timeoutMs, 0L);
-    }
-
-    /**
-     * Sends a request. When {@code requestId} is non-zero the frame answers an existing proxy request
-     * with that id (used by the handoff path so the proxy can match the commit result).
-     */
-    CompletableFuture<Frame> request(Opcode opcode, byte[] payload, long timeoutMs, long requestId) {
         if (state.get() != State.CONNECTED) {
             CompletableFuture<Frame> failed = new CompletableFuture<>();
             failed.completeExceptionally(new IOException("IPC is not connected"));
             return failed;
         }
-        // Proxy-issued ids and locally generated ids must not share a namespace: both counters start
-        // at 1, so a collision would silently overwrite a waiting future and time that request out.
-        long id = requestId != 0L ? requestId | PROXY_ID_BIT : requestIds.incrementAndGet();
+        // Every request id is allocated here, so the pending key is always the id that goes on the
+        // wire and a reply can be matched without guessing.
+        long id = requestIds.incrementAndGet();
         CompletableFuture<Frame> future = new CompletableFuture<>();
         pending.put(id, future);
         // The frame is registered before it is queued, so the single writer thread keeps request
         // order without the caller thread ever blocking on a socket write.
-        // The marker is local bookkeeping only; the proxy must see the id it issued.
-        Frame frame = new Frame(opcode, requestId != 0L ? requestId : id, payload);
+        Frame frame = new Frame(opcode, id, payload);
         CompletableFuture<Frame> bounded = future.whenComplete((frame1, error) -> pending.remove(id));
         try {
             writer.execute(() -> {

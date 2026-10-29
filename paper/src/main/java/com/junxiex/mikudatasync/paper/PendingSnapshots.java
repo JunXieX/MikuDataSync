@@ -19,16 +19,13 @@ public final class PendingSnapshots {
 
     private final ConcurrentHashMap<UUID, Pending> pending = new ConcurrentHashMap<>();
 
-    /** Players whose staged snapshot was dropped before the join, with the time it happened. */
-    private final java.util.Map<UUID, Long> dropped = new ConcurrentHashMap<>();
-
     /** Stores a pending snapshot. Returns false when the table is full and the value was dropped. */
     public boolean put(UUID uuid, Pending value) {
         evictExpired();
         if (pending.size() >= MAX_ENTRIES) {
             // Every entry here is still waiting for its join; dropping the oldest one would let that
-            // player enter with stale data and never get an ACK. Refuse the newcomer instead.
-            dropped.put(uuid, System.currentTimeMillis());
+            // player enter with stale data and never get an ACK. Refuse the newcomer instead, which
+            // the pre-login handler turns into a refused login.
             return false;
         }
         pending.put(uuid, value);
@@ -38,34 +35,23 @@ public final class PendingSnapshots {
     public Pending remove(UUID uuid) {
         Pending value = pending.remove(uuid);
         if (value != null && value.createdAt() < System.currentTimeMillis() - MAX_AGE_MS) {
-            dropped.put(uuid, System.currentTimeMillis());
             return null;
         }
         return value;
     }
 
-    /** Drops a staged entry without recording it as a failed apply (used on quit). */
+    /** Drops a staged entry without treating it as an applied snapshot (used on quit). */
     public void discard(UUID uuid) {
         pending.remove(uuid);
-        dropped.remove(uuid);
     }
 
-    /** True when this player had a snapshot staged and it was dropped before the join. */
-    public boolean takeDropped(UUID uuid) {
-        return dropped.remove(uuid) != null;
-    }
-
+    /**
+     * Expires entries whose login never completed (cancelled login, kicked client). They are not
+     * reported anywhere: an expired entry belongs to a player who is not joining.
+     */
     private void evictExpired() {
         long cutoff = System.currentTimeMillis() - MAX_AGE_MS;
-        pending.entrySet().removeIf(entry -> {
-            if (entry.getValue().createdAt() < cutoff) {
-                dropped.put(entry.getKey(), System.currentTimeMillis());
-                return true;
-            }
-            return false;
-        });
-        // A player that was refused at pre-login never joins, so the marker has to expire as well.
-        dropped.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+        pending.entrySet().removeIf(entry -> entry.getValue().createdAt() < cutoff);
     }
 
     public int size() {

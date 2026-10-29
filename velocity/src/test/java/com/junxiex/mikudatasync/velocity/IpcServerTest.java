@@ -122,9 +122,13 @@ class IpcServerTest {
                 IpcPayloads.uuid(uuid), 2000L);
         Frame flush = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
         assertEquals(Opcode.FLUSH_REQ, flush.opcode());
-        FrameCodec.write(out, new Frame(Opcode.PUT, flush.requestId(), IpcPayloads.putRequest(uuid, message((byte) 3))));
+        // The backend allocates its own request id for the handoff PUT; the gate is matched by
+        // player UUID, so echoing the FLUSH id is not what makes the gate pass.
+        long putRequestId = flush.requestId() + 1000L;
+        FrameCodec.write(out, new Frame(Opcode.PUT, putRequestId, IpcPayloads.putRequest(uuid, message((byte) 3))));
         Frame ok = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
         assertEquals(Opcode.PUT_OK, ok.opcode());
+        assertEquals(putRequestId, ok.requestId());
         Frame completed = future.get(2, TimeUnit.SECONDS);
         assertEquals(Opcode.PUT, completed.opcode());
         assertEquals(1L, store.get(uuid).seq());
@@ -151,7 +155,7 @@ class IpcServerTest {
         Frame flush = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
         FrameCodec.write(out, new Frame(Opcode.GET, 77L, IpcPayloads.uuid(uuid)));
         Thread.sleep(150);
-        FrameCodec.write(out, new Frame(Opcode.PUT, flush.requestId(), IpcPayloads.putRequest(uuid, message((byte) 5))));
+        FrameCodec.write(out, new Frame(Opcode.PUT, 4242L, IpcPayloads.putRequest(uuid, message((byte) 5))));
         assertEquals(Opcode.PUT_OK, FrameCodec.read(in, Protocol.MAX_FRAME_BYTES).opcode());
         Frame snapshot = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
         assertEquals(Opcode.SNAPSHOT, snapshot.opcode());

@@ -136,12 +136,24 @@ public record VelocityConfig(
                 commandPermission,
                 compactionThresholdMb * 1024L * 1024L,
                 retainOfflineMb * 1024L * 1024L,
-                getWaitAdjusted
-                        ? "sync.get-wait-ms was raised to sync.switch-timeout-ms (" + switchTimeoutMs
-                                + "); update config.yml to silence this notice"
-                        : null
+                warning(getWaitAdjusted, switchTimeoutMs, secret)
         );
         return loaded;
+    }
+
+    private static String warning(boolean getWaitAdjusted, int switchTimeoutMs, String secret) {
+        String message = null;
+        if (getWaitAdjusted) {
+            message = "sync.get-wait-ms was raised to sync.switch-timeout-ms (" + switchTimeoutMs
+                    + "); update config.yml to silence this notice";
+        }
+        if (Protocol.PLACEHOLDER_SECRET.equals(secret)) {
+            String placeholder = "protocol.secret is still the value shipped in config.yml; anyone who can "
+                    + "reach the IPC port can write snapshots for any player. Replace it with a random "
+                    + "secret of 32 characters or more";
+            message = message == null ? placeholder : message + "; " + placeholder;
+        }
+        return message;
     }
 
     public boolean failClosed() {

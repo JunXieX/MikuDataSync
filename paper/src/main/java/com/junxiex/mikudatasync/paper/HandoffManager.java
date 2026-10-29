@@ -1,6 +1,5 @@
 package com.junxiex.mikudatasync.paper;
 
-import com.junxiex.mikudatasync.common.ByteWriter;
 import com.junxiex.mikudatasync.common.Frame;
 import com.junxiex.mikudatasync.common.IpcPayloads;
 import com.junxiex.mikudatasync.common.Opcode;
@@ -55,27 +54,41 @@ public final class HandoffManager {
     /**
      * Releases the freeze when the player is leaving anyway (quit during a handoff). The cursor item
      * follows the commit result: it is dropped into the world only when the snapshot did not store it.
+     * A commit that still has not answered is left to the delayed unfreeze task, which runs on the
+     * entity thread; a completion callback runs on an IPC thread and must not touch world state.
      */
     public void clear(UUID uuid) {
         handoff.remove(uuid);
         Carried carried = carriedItems.remove(uuid);
+        CompletableFuture<Boolean> commit = commits.remove(uuid);
         if (carried == null) {
-            commits.remove(uuid);
             return;
         }
-        CompletableFuture<Boolean> commit = commits.remove(uuid);
         if (commit == null) {
             // The PUT was never sent, so nothing carries the item.
             dropInWorld(uuid, carried);
             return;
         }
-        // The player left before the commit result was known. Waiting for it is what separates
-        // "the snapshot holds this item" (discard the local copy) from "nothing holds it" (drop it).
+        if (commit.isDone()) {
+            if (!Boolean.TRUE.equals(commit.getNow(false))) {
+                dropInWorld(uuid, carried);
+            }
+            return;
+        }
+        // The player left before the commit result was known. Waiting for it is what separates "the
+        // snapshot holds this item" (discard the local copy) from "nothing holds it" (drop it); the
+        // drop itself is scheduled on the entity thread because this callback runs on an IPC thread.
         commit.whenComplete((stored, error) -> {
             if (Boolean.TRUE.equals(stored)) {
                 return;
             }
-            dropInWorld(uuid, carried);
+            Player player = plugin.getServer().getPlayer(uuid);
+            if (player == null) {
+                PluginSchedulers.runOnGlobal(plugin, () -> dropInWorld(uuid, carried));
+                return;
+            }
+            PluginSchedulers.runOnEntityOrElse(plugin, player, () -> dropInWorld(uuid, carried),
+                    () -> dropInWorld(uuid, carried));
         });
     }
 
@@ -181,25 +194,6 @@ public final class HandoffManager {
                 () -> ipcClient.respond(requestId, Opcode.ERROR, error("player retired")));
     }
 
-    /**
-     * A failed commit means the snapshot never made it into the journal, so nothing else carries the
-     * cursor item; it goes back into the inventory while the player is still online.
-     */
-    private void releaseAfterFailedCommit(UUID uuid) {
-        Carried carried = carriedItems.remove(uuid);
-        handoff.remove(uuid);
-        commits.remove(uuid);
-        if (carried == null) {
-            return;
-        }
-        Player player = plugin.getServer().getPlayer(uuid);
-        if (player == null || !player.isOnline()) {
-            dropInWorld(uuid, carried);
-            return;
-        }
-        PluginSchedulers.runOnEntity(plugin, player, () -> returnItemToInventory(player, carried.item()));
-    }
-
     private void captureAndRespond(Player player, long requestId) {
         UUID uuid = player.getUniqueId();
         // The commit future is published together with the freeze: from this instant on, a quit that
@@ -240,11 +234,10 @@ public final class HandoffManager {
             ipcClient.respond(requestId, Opcode.ERROR, error("capture failed"));
             return;
         }
-        // The reply answers the proxy's FLUSH_REQ id; the commit result arrives on the same future.
-        // Only a successful commit proves the snapshot holds the cursor item, so the local copy is
-        // released solely in that case.
+        // The PUT is an ordinary backend request and its PUT_OK is what proves the snapshot holds
+        // the cursor item; the proxy ties it to the gate by player UUID, not by request id.
         CompletableFuture<Frame> commit = ipcClient.request(Opcode.PUT,
-                IpcPayloads.putRequest(uuid, message), PUT_TIMEOUT_MS, requestId);
+                IpcPayloads.putRequest(uuid, message), PUT_TIMEOUT_MS);
         // The cursor item is released only when the commit result is known: a success means the
         // snapshot carries it (the local copy is discarded), a failure means nothing carries it (it is
         // handed back). Deciding earlier would duplicate the item or lose it.
@@ -297,6 +290,6 @@ public final class HandoffManager {
     }
 
     private static byte[] error(String message) {
-        return new ByteWriter(64).writeUtf(message).toByteArray();
+        return IpcPayloads.error(message);
     }
 }

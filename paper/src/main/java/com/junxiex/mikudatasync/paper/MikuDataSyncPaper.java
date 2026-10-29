@@ -75,6 +75,11 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         if (config.debugEnabled()) {
             getLogger().warning("Debug commands are ENABLED; disable debug.enabled in production");
         }
+        if (com.junxiex.mikudatasync.common.Protocol.PLACEHOLDER_SECRET.equals(config.secret())) {
+            getLogger().warning("proxy.secret is still the value shipped in config.yml; set a random secret "
+                    + "that matches the proxy, otherwise anyone who can reach the proxy IPC port can "
+                    + "inject player data");
+        }
         startPeriodicSnapshots();
         getLogger().info("MikuDataSync backend enabled for server " + config.serverId()
                 + " (" + (PluginSchedulers.isFolia() ? "Folia" : "Paper") + ")");

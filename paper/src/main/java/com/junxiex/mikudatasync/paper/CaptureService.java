@@ -140,6 +140,7 @@ public final class CaptureService {
                     } catch (ProtocolException stillTooLarge) {
                         // The degraded form must never replace the original failure with a smaller one:
                         // report the original cause so the log says which limit was hit first.
+                        tooLarge.addSuppressed(stillTooLarge);
                         throw tooLarge;
                     }
                     logger.warning("Snapshot for " + player.getName() + " exceeded the size limit ("
@@ -151,13 +152,9 @@ public final class CaptureService {
             SnapshotMessage message = new SnapshotMessage(0L, captureSeq, cause, serverId, encoded);
             Bukkit.getPluginManager().callEvent(new MikuDataSyncCaptureEvent(player, cause, message));
             return message;
-        } catch (Exception e) {
-            Metrics.recordCaptureFailure();
-            logger.severe("Failed to capture snapshot for " + player.getName() + ": " + e);
-            return null;
         } catch (Throwable t) {
-            // StackOverflowError from deeply nested containers would otherwise escape into the
-            // region thread and take the whole region down.
+            // Contains StackOverflowError from deeply nested containers as well: escaping into the
+            // region thread would take the whole region down with it.
             Metrics.recordCaptureFailure();
             logger.severe("Failed to capture snapshot for " + player.getName() + ": " + t);
             return null;

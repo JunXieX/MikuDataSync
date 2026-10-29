@@ -82,6 +82,11 @@ public final class IpcPayloads {
     public record AbortRequest(UUID uuid, boolean snapshotCommitted) {
     }
 
+    /** Error payload read by both sides with a 512-byte limit. */
+    public static byte[] error(String message) {
+        return new ByteWriter(64).writeUtf(Utf8.clip(message == null ? "unknown" : message, 480)).toByteArray();
+    }
+
     public static byte[] putOk(long seq) {
         return new ByteWriter(8).writeVarLong(seq).toByteArray();
     }

@@ -121,11 +121,14 @@ public final class SnapshotStore {
         if (total <= maxRetainedBytes) {
             return;
         }
+        // Evict down to a low-water mark. Stopping at the budget itself would put every following
+        // commit back over it, so the whole table would be copied and sorted on each commit.
+        long target = maxRetainedBytes - (maxRetainedBytes / 4L);
         List<java.util.Map.Entry<UUID, Entry>> byAge = new ArrayList<>(entries.size());
         entries.forEach((uuid, entry) -> byAge.add(java.util.Map.entry(uuid, entry)));
         byAge.sort(java.util.Comparator.comparingLong(entry -> entry.getValue().updatedAt()));
         for (java.util.Map.Entry<UUID, Entry> candidate : byAge) {
-            if (total <= maxRetainedBytes) {
+            if (total <= target) {
                 break;
             }
             if (!entries.remove(candidate.getKey(), candidate.getValue())) {

@@ -44,6 +44,9 @@ public final class MapBindings {
         if (!dirty) {
             return;
         }
+        // Cleared before the copy: a put that lands during the write sets it again, so its binding is
+        // written by the next flush instead of being forgotten along with the flag.
+        dirty = false;
         Properties properties = new Properties();
         bindings.forEach((key, value) -> properties.setProperty(key, Integer.toString(value)));
         try {
@@ -56,8 +59,8 @@ public final class MapBindings {
                 properties.store(out, "MikuDataSync map bindings");
             }
             Files.move(temp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            dirty = false;
         } catch (IOException e) {
+            dirty = true;
             logger.warning("Failed to save map bindings: " + e.getMessage());
         }
     }

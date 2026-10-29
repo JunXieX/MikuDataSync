@@ -1,6 +1,5 @@
 package com.junxiex.mikudatasync.paper;
 
-import com.junxiex.mikudatasync.common.ByteWriter;
 import com.junxiex.mikudatasync.common.IpcPayloads;
 import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
@@ -43,6 +42,6 @@ public final class BackupHandler {
     }
 
     private static byte[] error(String message) {
-        return new ByteWriter(64).writeUtf(message).toByteArray();
+        return IpcPayloads.error(message);
     }
 }

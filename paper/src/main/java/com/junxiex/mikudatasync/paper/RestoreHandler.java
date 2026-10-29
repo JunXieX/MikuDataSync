@@ -52,12 +52,7 @@ public final class RestoreHandler {
         }
     }
 
-    /** Error payloads are decoded with a 512-byte limit, so long messages must be clipped. */
     private static byte[] error(String message) {
-        String text = message == null ? "unknown" : message;
-        if (text.length() > 400) {
-            text = text.substring(0, 400);
-        }
-        return new com.junxiex.mikudatasync.common.ByteWriter(512).writeUtf(text).toByteArray();
+        return IpcPayloads.error(message);
     }
 }
