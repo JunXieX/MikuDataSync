@@ -4,7 +4,7 @@
 
 跨服玩家数据同步插件：玩家在多个 Paper 子服之间切换时，物品栏、末影箱、状态、进度、统计、属性与 PDC 保持连续。插件不依赖任何数据库或外部中间件，由 Velocity 插件充当数据总线、快照存储与切换编排器。
 
-> 正式版 1.7.0，适用于 Paper 26.3 / Velocity 4.3.0 / Java 25。
+> 正式版 1.8.0，适用于 Paper 26.3 / Velocity 4.3.0 / Java 25。
 
 ## 运行要求
 
@@ -35,13 +35,13 @@
 | `store.journal-file` | data/journal.mds | 快照日志文件（唯一持久层，请纳入备份） |
 | `store.fsync-mode` | interval | always / interval / never；切服与退服记录始终落盘 |
 | `store.fsync-interval-ms` | 50 | interval 模式的刷盘周期（10~10000） |
-| `store.compaction-threshold-mb` | 64 | 日志超过该大小后压缩为每玩家最新一条；压缩在后台进行，不阻塞切服 |
+| `store.compaction-threshold-mb` | 64 | 日志超过该大小后压缩为每玩家最新一条；复制阶段在后台进行，替换文件时会短暂占用日志写锁（正常磁盘为毫秒级） |
 | `store.retain-offline-snapshots` | false | 是否在内存保留离线玩家快照 |
 | `store.retain-offline-budget-mb` | 256 | 内存快照表的字节预算，与 `retain-offline-snapshots` 独立生效；条目数超过 32 后按最久未更新淘汰 |
 | `sync.switch-timeout-ms` | 1500 | 切服闸门等待源服快照的时间 |
 | `sync.get-wait-ms` | 1500 | 预登录取数时等待在途快照提交的时间；小于 `switch-timeout-ms` 时会被自动抬升并打日志 |
 | `sync.max-snapshot-bytes` | 1048576 | 单份快照的落盘上限（1KB~1MB） |
-| `sync.fail-mode` | closed | closed（不确定就拒绝切换）/ open / kick |
+| `sync.fail-mode` | closed | closed（不确定就拒绝切换）/ open（放行，可能读到旧快照）/ kick（拒绝并断开玩家） |
 | `sync.periodic-flush-seconds` | 30 | 日志刷盘与压缩的周期；它不产生快照，周期快照由 Paper 端 `sync.periodic-snapshot-seconds` 控制 |
 | `backups.keep` | 20 | `/mds backup` 保留的备份文件数量 |
 | `commands.permission` | mikudatasync.admin | 代理命令权限节点；留空时按 `mikudatasync.admin` 处理，不会对玩家开放 |
@@ -96,8 +96,9 @@
 
 ## 切换语义与数据安全
 
-- 切服时先让源服产出最终快照并写入代理日志，确认成功后才放行目标服连接；失败默认拒绝切换。
+- 切服时先让源服产出最终快照并写入代理日志，确认成功后才放行目标服连接；失败默认拒绝切换。唯一的例外是源服已经失联（崩溃/重启/网络中断）：此时拒绝会让该服上的玩家全部卡住，因此改用最后一份已提交快照放行，并在日志中记录。
 - 玩家在目标服可交互前完成数据应用，应用失败会踢出并记录，不会带着半份数据继续游戏。
+- 快照的格式或数据版本与本服不一致（例如只升级了部分子服）时，该快照无法应用：玩家照常进入并使用本服已有数据，这一次会话不会被采集，以免用本地数据覆盖还可能有用的快照；日志会给出明确告警。
 - 每次提交有单调序号与内容哈希去重；同一玩家同一时刻只允许一个写者。
 - 切服提交带交接号：代理只认「本轮切服」的快照，迟到或上一轮的提交不会放行本轮切换；代理已判定某轮未落库时，该轮的迟到提交会被丢弃，避免光标物品出现两份。
 - 正常切服/退服不丢数据；代理崩溃最多丢最近的 fsync 窗口（默认 50ms）；后端被强杀最多丢一个周期快照间隔。该窗口是“不依赖数据库”的固有代价。
@@ -111,6 +112,7 @@
 - Folia 下所有采集/应用/冻结都在玩家所属区域线程执行，周期任务走全局区域调度器。
 - 不支持从其他同步插件导入历史数据。
 - 地图颜色同步默认开启；物品内嵌颜色按 320KB 字节预算分配（通常 15~19 张，视已有数据而定），超出部分只走地图段同步，避免物品段超出上限导致快照无法生成。
+- 地图编号按维度各自分配，而物品本身只记录编号：同一个编号在主世界与下界/末地都存在时，插件以玩家当前所在维度优先取色，跨维度携带的地图可能显示成另一维度同号地图的画面。
 - 仅支持列表中的最新版本（Paper 26.3 / Velocity 4.3.0 / Java 25），不提供旧版本兼容。
 - 若代理在切服中途完全不可达、玩家又恰好在该窗口内断开，源服会把光标物品放回背包（离线时掉落在地上）以保证不丢失；这条路径下该物品可能与代理日志中的旧快照各存一份，恢复连接后以快照为准重新覆盖。
 
@@ -121,7 +123,8 @@
 | 切服被拒绝 | 查看代理日志中的 `Denying switch`；确认两端 secret、server-id、端口与防火墙 |
 | 进服背包是旧的 | 确认 Paper 与代理日志中 IPC 已连接；检查 `sync.on-sync-unavailable` |
 | 切服被拒绝且日志出现 backend not connected | Paper 的 `proxy.server-id` 必须与 Velocity 中子服名称完全一致（含大小写） |
-| 数据版本不匹配 | 所有子服必须运行同一 MC 版本，升级时先停服统一升级 |
+| 日志出现 does not fit this server | 快照由另一版本写出、无法应用；该玩家以本服已有数据进入，本次会话不采集。停服统一升级后删除 `plugins/mikudatasync/data/journal.mds` 即可恢复同步 |
+| 启动报 duplicate key | config.yml 里同一个键写了两次，会直接拒绝启动（旧版本是静默取最后一次） |
 | 日志出现 protocol version does not match / HMAC mismatch | 代理与所有后端必须同版本且 secret 完全一致；只升级一端会导致该后端全员进不去 |
 | 日志出现 sync.get-wait-ms was raised to sync.switch-timeout-ms | 旧配置里的 get-wait-ms 偏小，已自动抬升并提示；按提示改成不小于 switch-timeout-ms 即可消除 |
 | 日志增长异常 | 检查 `/mds stats` 的 journal 大小；确认周期快照间隔与玩家数量 |

@@ -127,6 +127,11 @@ public final class IpcServer implements AutoCloseable {
         return connections.containsKey(serverId);
     }
 
+    /** Server ids that currently hold a connection, for diagnostics. */
+    public Set<String> connectedServers() {
+        return Set.copyOf(connections.keySet());
+    }
+
     /**
      * Resolves whether the handoff that just failed actually reached the store. Only two facts can
      * prove it: a commit that landed after its request had already timed out, or a commit whose

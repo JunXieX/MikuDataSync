@@ -118,7 +118,8 @@ public final class SwitchOrchestrator {
         // The source backend is gone (crash, restart, network loss). Denying here also denied the
         // proxy's own fallback redirect, so every player on that server was stranded and finally
         // kicked. The last committed snapshot is the best data available; let them leave.
-        logger.warn("Allowing switch for {} because source server {} is not connected ({}); "
-                + "using the last committed snapshot", player.getUsername(), sourceServer, reason);
+        logger.warn("Allowing switch for {} because source server {} is not connected ({}); using the last "
+                        + "committed snapshot. Connected backends: {}", player.getUsername(), sourceServer, reason,
+                ipcServer.connectedServers());
     }
 }
