@@ -63,6 +63,15 @@ public final class HandoffManager {
         return handoff.contains(uuid);
     }
 
+    /**
+     * True while a cursor item taken by a handoff still has to be settled. The freeze is released
+     * earlier than that, so the quit path has to ask separately, otherwise its capture would rebuild
+     * the snapshot without the item and the parked copy would then be discarded.
+     */
+    public boolean hasParkedItem(UUID uuid) {
+        return carriedItems.containsKey(uuid);
+    }
+
     /** Releases the freeze and settles the parked cursor item when the player is leaving anyway. */
     public void clear(UUID uuid) {
         settleParkedItem(uuid, plugin.getServer().getPlayer(uuid), true);

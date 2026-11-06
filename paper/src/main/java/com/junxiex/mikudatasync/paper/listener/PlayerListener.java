@@ -138,9 +138,9 @@ public final class PlayerListener implements Listener {
             handoffManager.clear(uuid);
             return;
         }
-        if (handoffManager.isHandingOff(uuid)) {
-            // The switch flush already persisted the final state; a quit snapshot here could
-            // overwrite the new server's snapshot with stale source-side data.
+        if (handoffManager.isHandingOff(uuid) || handoffManager.hasParkedItem(uuid)) {
+            // The switch flush already persisted the final state; a quit snapshot here would rebuild it
+            // from an inventory that no longer holds the parked cursor item.
             handoffManager.clear(uuid);
             return;
         }
