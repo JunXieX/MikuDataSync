@@ -82,11 +82,22 @@ public final class HandoffManager {
         }
     }
 
-    /** Drops any state left by an earlier handoff: a new session is governed by the snapshot. */
-    public void discardParked(UUID uuid) {
+    /**
+     * Clears state left by an earlier handoff once the player is back on this server. The parked item
+     * is only handed back when the applied snapshot did not carry it itself; otherwise the snapshot
+     * already put it back and returning a second copy would duplicate it.
+     */
+    public void resolveParkedOnJoin(UUID uuid, boolean snapshotCarriedCursorItem) {
         handoff.remove(uuid);
-        carriedItems.remove(uuid);
         commits.remove(uuid);
+        Carried carried = carriedItems.remove(uuid);
+        if (carried == null || snapshotCarriedCursorItem) {
+            return;
+        }
+        Player player = plugin.getServer().getPlayer(uuid);
+        if (player != null) {
+            returnItemToInventory(player, carried.item());
+        }
     }
 
     /**
