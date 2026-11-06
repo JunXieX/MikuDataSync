@@ -128,7 +128,16 @@ public final class MikuDataSyncPaper extends JavaPlugin {
     }
 
     private void snapshotOnlinePlayers() {
-        for (Player player : getServer().getOnlinePlayers()) {
+        java.util.List<Player> players = new java.util.ArrayList<>(getServer().getOnlinePlayers());
+        if (players.isEmpty()) {
+            return;
+        }
+        // Spread over half the period: capturing every player in one tick adds up to a visible spike
+        // once the server holds a few dozen players, and nothing here is time critical.
+        long periodTicks = 20L * config.periodicSnapshotSeconds();
+        long spacing = Math.max(1L, (periodTicks / 2L) / players.size());
+        for (int index = 0; index < players.size(); index++) {
+            Player player = players.get(index);
             if (pendingSnapshots.isUnsynced(player.getUniqueId())) {
                 continue;
             }
@@ -137,7 +146,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
                 // race the final PUT and could overwrite it with a pre-flush state.
                 continue;
             }
-            PluginSchedulers.runOnEntity(this, player, () -> {
+            PluginSchedulers.runDelayed(this, player, () -> {
                 SnapshotMessage message = captureService.capture(player, "periodic");
                 if (message == null) {
                     return;
@@ -150,7 +159,7 @@ public final class MikuDataSyncPaper extends JavaPlugin {
                         getLogger().fine("Periodic snapshot failed for " + uuid + ": " + error.getMessage());
                     }
                 });
-            });
+            }, index * spacing);
         }
     }
 

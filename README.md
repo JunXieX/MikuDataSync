@@ -35,7 +35,7 @@
 | `store.journal-file` | data/journal.mds | 快照日志文件（唯一持久层，请纳入备份） |
 | `store.fsync-mode` | interval | always / interval / never；切服与退服记录始终落盘 |
 | `store.fsync-interval-ms` | 50 | interval 模式的刷盘周期（10~10000） |
-| `store.compaction-threshold-mb` | 64 | 日志超过该大小后压缩为每玩家最新一条；复制阶段在后台进行，替换文件时会短暂占用日志写锁（正常磁盘为毫秒级） |
+| `store.compaction-threshold-mb` | 64 | 日志超过该大小后压缩为每玩家最新一条；复制阶段在后台进行，替换文件前要对整份新文件落盘，这段时间占用日志写锁（磁盘越慢越久，慢盘可能到百毫秒级） |
 | `store.retain-offline-snapshots` | false | 是否在内存保留离线玩家快照 |
 | `store.retain-offline-budget-mb` | 256 | 内存快照表的字节预算，与 `retain-offline-snapshots` 独立生效；条目数超过 32 后按最久未更新淘汰 |
 | `sync.switch-timeout-ms` | 1500 | 切服闸门等待源服快照的时间 |
@@ -61,7 +61,8 @@
 | `sync.prelogin-fetch-timeout-ms` | 500 | 登录前取数超时（上限 3000，该值会阻塞登录线程） |
 | `sync.on-sync-unavailable` | kick | 数据不可用时踢出（推荐）或放行（continue，可能读到旧数据） |
 | `sync.periodic-snapshot-seconds` | 30 | 周期快照间隔 |
-| `sync.sections.maps` | true | 地图颜色 + cursor 同步（物品 PDC + Renderer）；含潜影盒/Bundle 内地图 |
+| `sync.sections.maps` | true | 地图颜色同步（物品内嵌数据 + 渲染器）；含潜影盒/Bundle 内地图 |
+| `sync.sections.cursor-item` | true | 容器光标物品同步；关闭后切服时光标物品留在菜单里 |
 | `debug.enabled` | false | 是否启用管理员调试命令 |
 
 ## 命令与权限
@@ -114,7 +115,8 @@
 - 地图颜色同步默认开启；物品内嵌颜色按 320KB 字节预算分配（通常 15~19 张，视已有数据而定），超出部分只走地图段同步，避免物品段超出上限导致快照无法生成。
 - 地图编号按维度各自分配，而物品本身只记录编号：同一个编号在主世界与下界/末地都存在时，插件以玩家当前所在维度优先取色，跨维度携带的地图可能显示成另一维度同号地图的画面。
 - 仅支持列表中的最新版本（Paper 26.3 / Velocity 4.3.0 / Java 25），不提供旧版本兼容。
-- 若代理在切服中途完全不可达、玩家又恰好在该窗口内断开，源服会把光标物品放回背包（离线时掉落在地上）以保证不丢失；这条路径下该物品可能与代理日志中的旧快照各存一份，恢复连接后以快照为准重新覆盖。
+- 切服时从容器光标取下的物品由快照承载：切服失败但玩家仍留在本服，物品会放回背包；玩家已离开且快照确认落库，物品随快照在目标服发放；只有既没有落库、玩家又已经离线时才掉落在地上。
+- 若代理在切服窗口内完全不可达、玩家又恰好在这时断开，源服无法确认快照是否落库，会丢弃本地那份并在日志中告警，以「不复制」优先。
 
 ## 故障排查
 

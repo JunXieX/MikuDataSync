@@ -124,16 +124,22 @@ public final class ApplyService {
         stageStart = System.nanoTime();
         if (pdc != null) {
             // First mutation of the apply: the PDC bytes are the only opaque blob left at this point,
-            // so a failure here happens before the inventory/health are touched.
-            if (config.pdcMerge()) {
-                ItemStack carrier = new ItemStack(Material.STONE);
-                var meta = carrier.getItemMeta();
-                if (meta != null) {
-                    meta.getPersistentDataContainer().readFromBytes(pdc, true);
-                    meta.getPersistentDataContainer().copyTo(player.getPersistentDataContainer(), false);
+            // so a failure here happens before the inventory/health are touched. It stays degraded
+            // rather than fatal: kicking would repeat on every login while the snapshot is current.
+            try {
+                if (config.pdcMerge()) {
+                    ItemStack carrier = new ItemStack(Material.STONE);
+                    var meta = carrier.getItemMeta();
+                    if (meta != null) {
+                        meta.getPersistentDataContainer().readFromBytes(pdc, true);
+                        meta.getPersistentDataContainer().copyTo(player.getPersistentDataContainer(), false);
+                    }
+                } else {
+                    player.getPersistentDataContainer().readFromBytes(pdc, true);
                 }
-            } else {
-                player.getPersistentDataContainer().readFromBytes(pdc, true);
+            } catch (RuntimeException e) {
+                Bukkit.getLogger().severe("Failed to apply the stored PDC for " + player.getName()
+                        + ", the player keeps this server's PDC: " + e);
             }
         }
         StageMetrics.record("apply.pdc", System.nanoTime() - stageStart);

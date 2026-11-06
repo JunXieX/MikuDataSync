@@ -221,6 +221,10 @@ public final class HandoffManager {
         // the item must stay in the menu, otherwise it would be lost.
         boolean cursorSync = captureService.capturesCursor();
         ItemStack carried = cursorSync ? NmsBridge.getCarriedItem(player) : null;
+        if (carried != null && carried.getType().isAir()) {
+            // The bridge returns the empty stack rather than null; air is not an item to carry around.
+            carried = null;
+        }
         if (cursorSync) {
             if (carried != null) {
                 // Remember where the item came from: if the player is gone by the time it has to be
@@ -292,18 +296,21 @@ public final class HandoffManager {
         if (leftover == null) {
             return;
         }
+        if (!entityGone && player != null && player.isOnline()) {
+            // Still on this server means the switch never took the player away (the target refused the
+            // connection, or the proxy denied it). The item belongs back in the inventory: whether the
+            // snapshot stored a copy or not, this session's next capture replaces that snapshot.
+            returnItemToInventory(player, leftover.item());
+            return;
+        }
         if (Boolean.FALSE.equals(stored)) {
-            // Definitely not stored and no abort came, so nothing else carries the item.
-            if (!entityGone && player != null && player.isOnline()) {
-                returnItemToInventory(player, leftover.item());
-            } else {
-                dropInWorld(uuid, leftover);
-            }
+            // The player is gone and nothing carries the item, so a world drop is the only copy left.
+            dropInWorld(uuid, leftover);
             return;
         }
         if (stored == null) {
-            // The proxy never answered and never aborted. Handing the item out here could duplicate
-            // the copy the snapshot may already carry, so the local one is dropped.
+            // Unknown commit outcome and the player is gone: handing the item out could duplicate the
+            // copy the snapshot may already carry, so the local one is dropped and reported.
             plugin.getLogger().severe("Cursor item for " + uuid + " was dropped: the handoff "
                     + "commit result is unknown and no abort arrived");
         }
