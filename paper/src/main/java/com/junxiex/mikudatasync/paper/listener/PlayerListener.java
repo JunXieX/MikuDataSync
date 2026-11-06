@@ -80,12 +80,13 @@ public final class PlayerListener implements Listener {
         ApplyService.Prepared prepared;
         try {
             prepared = applyService.prepare(SnapshotEnvelope.decode(message.envelope()));
-        } catch (ProtocolException | RuntimeException e) {
+        } catch (Exception e) {
             // The stored snapshot was written by another build (data or schema version) and cannot be
             // applied here. Denying the login would lock this player out of every server until the
             // journal is cleared, while the snapshot itself is unusable either way.
             plugin.getLogger().warning("Stored snapshot for " + uuid + " does not fit this server ("
                     + e.getMessage() + "); the player enters with local data");
+            pendingSnapshots.markUnsynced(uuid);
             return;
         }
         if (!pendingSnapshots.put(uuid,
@@ -131,6 +132,12 @@ public final class PlayerListener implements Listener {
         }
         pendingSnapshots.discard(uuid);
         captureService.forget(uuid);
+        if (pendingSnapshots.takeUnsynced(uuid)) {
+            // This session ran on local data because its snapshot does not fit this build; capturing
+            // it now would replace that snapshot with a character that may be empty here.
+            handoffManager.clear(uuid);
+            return;
+        }
         if (handoffManager.isHandingOff(uuid)) {
             // The switch flush already persisted the final state; a quit snapshot here could
             // overwrite the new server's snapshot with stale source-side data.

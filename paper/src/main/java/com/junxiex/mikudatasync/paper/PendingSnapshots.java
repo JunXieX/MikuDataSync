@@ -16,6 +16,7 @@ public final class PendingSnapshots {
     private static final int MAX_ENTRIES = 256;
 
     private final ConcurrentHashMap<UUID, Pending> pending = new ConcurrentHashMap<>();
+    private final java.util.Set<UUID> unsynced = ConcurrentHashMap.newKeySet();
 
     /** Stores a pending snapshot. Returns false when the table is full and the value was dropped. */
     public boolean put(UUID uuid, Pending value) {
@@ -50,6 +51,24 @@ public final class PendingSnapshots {
     private void evictExpired() {
         long cutoff = System.currentTimeMillis() - MAX_AGE_MS;
         pending.entrySet().removeIf(entry -> entry.getValue().createdAt() < cutoff);
+    }
+
+    /**
+     * Marks a session that entered without applying a snapshot because the stored one does not fit
+     * this build. Capturing such a session would overwrite a snapshot the player may still want with
+     * whatever local data this server happens to hold.
+     */
+    public void markUnsynced(UUID uuid) {
+        unsynced.add(uuid);
+    }
+
+    /** True while this session must not be captured; consumed on quit. */
+    public boolean takeUnsynced(UUID uuid) {
+        return unsynced.remove(uuid);
+    }
+
+    public boolean isUnsynced(UUID uuid) {
+        return unsynced.contains(uuid);
     }
 
     public int size() {

@@ -129,6 +129,9 @@ public final class MikuDataSyncPaper extends JavaPlugin {
 
     private void snapshotOnlinePlayers() {
         for (Player player : getServer().getOnlinePlayers()) {
+            if (pendingSnapshots.isUnsynced(player.getUniqueId())) {
+                continue;
+            }
             if (handoffManager.isHandingOff(player.getUniqueId())) {
                 // The switch flush already owns this player's snapshot; a periodic capture now would
                 // race the final PUT and could overwrite it with a pre-flush state.

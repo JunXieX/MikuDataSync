@@ -350,7 +350,10 @@ public final class NmsBridge {
                         depth + 1);
                 blockState.setBlockState(container);
                 item.setItemMeta(blockState);
-                inventory.setItem(i, item);
+                // A bundle recurses with no owning inventory, so the item is already updated in place.
+                if (inventory != null) {
+                    inventory.setItem(i, item);
+                }
             } else if (meta instanceof org.bukkit.inventory.meta.BundleMeta bundle && bundle.hasItems()) {
                 ItemStack[] nested = bundle.getItems().toArray(ItemStack[]::new);
                 persistMaps(player, nested, null, budget, depth + 1);
@@ -548,7 +551,9 @@ public final class NmsBridge {
                         depth + 1);
                 blockState.setBlockState(container);
                 item.setItemMeta(blockState);
-                inventory.setItem(i, item);
+                if (inventory != null) {
+                    inventory.setItem(i, item);
+                }
             } else if (depth < MAX_CONTAINER_DEPTH && meta instanceof org.bukkit.inventory.meta.BundleMeta bundle
                     && bundle.hasItems()) {
                 ItemStack[] nested = bundle.getItems().toArray(ItemStack[]::new);
@@ -652,7 +657,7 @@ public final class NmsBridge {
             }
             org.bukkit.inventory.Inventory target = Bukkit.createInventory(null, 27);
             target.setItem(0, source.getItem(0).clone());
-            applyItemMaps(player, target.getContents(), target, new HashMap<>());
+            applyItemMaps(player, target.getContents(), target, new HashMap<>(), 0);
             ItemMapData applied = nestedMap(target.getItem(0));
             return "recursiveMap ok checksum=" + checksum(persisted.colors())
                     + " cursors=" + persisted.cursors().size()
@@ -868,9 +873,7 @@ public final class NmsBridge {
                 for (Object criterion : completed) {
                     criteria.add(String.valueOf(criterion));
                 }
-                // An advancement with more criteria than the codec accepts must be skipped here:
-                // writing it would make the whole snapshot undecodable on the target server.
-                if (!criteria.isEmpty() && criteria.size() <= AdvancementList.MAX_CRITERIA) {
+                if (!criteria.isEmpty()) {
                     entries.add(new AdvancementList.Entry(id.toString(), criteria));
                 }
             }
