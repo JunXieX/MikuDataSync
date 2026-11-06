@@ -275,41 +275,38 @@ public final class HandoffManager {
         // The freeze itself still needs a bounded worst case: a passed gate does not guarantee the
         // target connection succeeds, and a player must not stay frozen forever. The parked cursor
         // item is released here when no abort arrived to decide it.
-        PluginSchedulers.runDelayed(plugin, player, () -> {
-            try {
-                handoff.remove(uuid);
-                CompletableFuture<Boolean> pendingCommit = commits.remove(uuid);
-                Boolean stored = pendingCommit == null ? Boolean.FALSE : pendingCommit.getNow(null);
-                Carried leftover = carriedItems.remove(uuid);
-                if (leftover == null) {
-                    return;
-                }
-                if (Boolean.FALSE.equals(stored)) {
-                    // Definitely not stored and no abort came, so nothing else carries the item.
-                    if (player.isOnline()) {
-                        returnItemToInventory(player, leftover.item());
-                    } else {
-                        dropInWorld(uuid, leftover);
-                    }
-                    return;
-                }
-                if (stored == null) {
-                    // The proxy never answered and never aborted. Handing the item out here could
-                    // duplicate the copy the snapshot may already carry, so the local one is dropped.
-                    plugin.getLogger().severe("Cursor item for " + uuid + " was dropped: the handoff "
-                            + "commit result is unknown and no abort arrived");
-                }
-            } finally {
-                handoff.remove(uuid);
+        PluginSchedulers.runDelayed(plugin, player,
+                () -> settleParkedItem(uuid, player, false),
+                () -> settleParkedItem(uuid, player, true), UNFREEZE_TICKS);
+    }
+
+    /**
+     * Decides the fate of a cursor item parked by a handoff whose commit result is still pending when
+     * the freeze window ends. The item is only handed out when the commit is known to have failed.
+     */
+    private void settleParkedItem(UUID uuid, Player player, boolean entityGone) {
+        handoff.remove(uuid);
+        CompletableFuture<Boolean> pendingCommit = commits.remove(uuid);
+        Boolean stored = pendingCommit == null ? Boolean.FALSE : pendingCommit.getNow(null);
+        Carried leftover = carriedItems.remove(uuid);
+        if (leftover == null) {
+            return;
+        }
+        if (Boolean.FALSE.equals(stored)) {
+            // Definitely not stored and no abort came, so nothing else carries the item.
+            if (!entityGone && player != null && player.isOnline()) {
+                returnItemToInventory(player, leftover.item());
+            } else {
+                dropInWorld(uuid, leftover);
             }
-        }, () -> {
-            handoff.remove(uuid);
-            commits.remove(uuid);
-            Carried retired = carriedItems.remove(uuid);
-            if (retired != null) {
-                dropInWorld(uuid, retired);
-            }
-        }, UNFREEZE_TICKS);
+            return;
+        }
+        if (stored == null) {
+            // The proxy never answered and never aborted. Handing the item out here could duplicate
+            // the copy the snapshot may already carry, so the local one is dropped.
+            plugin.getLogger().severe("Cursor item for " + uuid + " was dropped: the handoff "
+                    + "commit result is unknown and no abort arrived");
+        }
     }
 
     private static boolean isTimeout(Throwable error) {

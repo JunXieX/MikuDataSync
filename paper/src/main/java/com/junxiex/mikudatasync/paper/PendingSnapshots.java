@@ -28,6 +28,9 @@ public final class PendingSnapshots {
             return false;
         }
         pending.put(uuid, value);
+        // A usable snapshot supersedes an earlier "this session runs on local data" mark, which may
+        // have been left behind by a login that was cancelled before it joined.
+        unsynced.remove(uuid);
         return true;
     }
 
