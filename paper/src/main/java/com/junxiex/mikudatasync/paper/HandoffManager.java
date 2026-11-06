@@ -26,10 +26,10 @@ public final class HandoffManager {
     private static final long UNFREEZE_TICKS = 60L;
 
     /**
-     * How long a parked cursor item waits for a definitive answer. The PUT itself gives up after
-     * {@link #PUT_TIMEOUT_MS} and the proxy's abort arrives earlier than this in every configuration,
-     * so by the time it runs the commit outcome is known and the player is either still here (the
-     * switch failed) or gone (the snapshot carries the item).
+     * How long a parked cursor item waits before it is settled locally. The PUT itself gives up after
+     * {@link #PUT_TIMEOUT_MS}, so the commit outcome is known by then; the proxy's abort usually
+     * arrives earlier and takes precedence, and a longer gate timeout only means this fallback runs
+     * first with the same safe outcome (no second copy).
      */
     private static final long ITEM_SETTLE_TICKS = 5L * 20L;
 
@@ -63,41 +63,9 @@ public final class HandoffManager {
         return handoff.contains(uuid);
     }
 
-    /**
-     * Releases the freeze when the player is leaving anyway (quit during a handoff). The cursor item
-     * stays parked while the PUT is still in flight: only its outcome (or the proxy's abort) tells
-     * whether the snapshot carries the item or it has to be dropped into the world.
-     */
+    /** Releases the freeze and settles the parked cursor item when the player is leaving anyway. */
     public void clear(UUID uuid) {
-        handoff.remove(uuid);
-        CompletableFuture<Boolean> commit = commits.get(uuid);
-        if (commit != null && !commit.isDone()) {
-            return;
-        }
-        Carried carried = carriedItems.remove(uuid);
-        commits.remove(uuid);
-        if (carried != null && Boolean.FALSE.equals(commit == null ? null : commit.getNow(null))) {
-            // The PUT failed definitively while the player was leaving, so nothing carries the item.
-            dropInWorld(uuid, carried);
-        }
-    }
-
-    /**
-     * Clears state left by an earlier handoff once the player is back on this server. The parked item
-     * is only handed back when the applied snapshot did not carry it itself; otherwise the snapshot
-     * already put it back and returning a second copy would duplicate it.
-     */
-    public void resolveParkedOnJoin(UUID uuid, boolean snapshotCarriedCursorItem) {
-        handoff.remove(uuid);
-        commits.remove(uuid);
-        Carried carried = carriedItems.remove(uuid);
-        if (carried == null || snapshotCarriedCursorItem) {
-            return;
-        }
-        Player player = plugin.getServer().getPlayer(uuid);
-        if (player != null) {
-            returnItemToInventory(player, carried.item());
-        }
+        settleParkedItem(uuid, plugin.getServer().getPlayer(uuid), true);
     }
 
     /**
@@ -293,38 +261,42 @@ public final class HandoffManager {
      * Decides the fate of a cursor item parked by a handoff whose commit result is still pending when
      * the freeze window ends. The item is only handed out when the commit is known to have failed.
      */
+    /**
+     * Single place that decides what happens to a cursor item taken out of the menu by a handoff.
+     *
+     * <p>The item is handed to the player only when that cannot produce a second copy: either the
+     * player is still here (no switch happened, so the snapshot is rebuilt from this session) or the
+     * commit is known to have failed (nothing carries the item). Every other combination, including
+     * "the answer never arrived", discards the local copy: an item lost in a proxy outage is
+     * recoverable from the journal, a duplicated one is not.
+     */
     private void settleParkedItem(UUID uuid, Player player, boolean entityGone) {
         handoff.remove(uuid);
-        CompletableFuture<Boolean> pendingCommit = commits.get(uuid);
-        if (pendingCommit != null && !pendingCommit.isDone()) {
-            // Folia retires the entity before the PUT can answer; waiting for the outcome is what keeps
-            // the item from being discarded while the snapshot may still accept it.
-            pendingCommit.whenComplete((stored, error) -> settleParkedItem(uuid, player, true));
+        CompletableFuture<Boolean> commit = commits.get(uuid);
+        if (commit != null && !commit.isDone()) {
+            // Folia retires the entity before the PUT can answer; deciding when the outcome is known is
+            // what keeps the item from being discarded while the snapshot may still accept it.
+            commit.whenComplete((stored, error) -> settleParkedItem(uuid, player, true));
             return;
         }
         commits.remove(uuid);
-        Boolean stored = pendingCommit == null ? Boolean.FALSE : pendingCommit.getNow(null);
         Carried leftover = carriedItems.remove(uuid);
         if (leftover == null) {
             return;
         }
         if (!entityGone && player != null && player.isOnline()) {
-            // Still on this server means the switch never took the player away (the target refused the
-            // connection, or the proxy denied it). The item belongs back in the inventory: whether the
-            // snapshot stored a copy or not, this session's next capture replaces that snapshot.
             returnItemToInventory(player, leftover.item());
             return;
         }
+        Boolean stored = commit == null ? Boolean.FALSE : commit.getNow(null);
         if (Boolean.FALSE.equals(stored)) {
-            // The player is gone and nothing carries the item, so a world drop is the only copy left.
+            // The player is gone and no snapshot carries the item, so a world drop is the only copy left.
             dropInWorld(uuid, leftover);
             return;
         }
         if (stored == null) {
-            // Unknown commit outcome and the player is gone: handing the item out could duplicate the
-            // copy the snapshot may already carry, so the local one is dropped and reported.
-            plugin.getLogger().severe("Cursor item for " + uuid + " was dropped: the handoff "
-                    + "commit result is unknown and no abort arrived");
+            plugin.getLogger().severe("Cursor item for " + uuid + " was discarded: the handoff commit "
+                    + "result is unknown and no abort arrived");
         }
     }
 

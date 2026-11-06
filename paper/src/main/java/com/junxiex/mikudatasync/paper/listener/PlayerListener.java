@@ -101,12 +101,9 @@ public final class PlayerListener implements Listener {
         Player player = event.getPlayer();
         PendingSnapshots.Pending pending = pendingSnapshots.remove(player.getUniqueId());
         if (pending == null) {
-            // Brand-new player: the proxy has no snapshot, so the local data stays authoritative. An
-            // item parked by an earlier failed handoff still belongs to this player.
-            handoffManager.resolveParkedOnJoin(player.getUniqueId(), false);
+            // Brand-new player: the proxy has no snapshot, so the local data stays authoritative.
             return;
         }
-        boolean snapshotCarriedCursorItem = pending.prepared().cursorItem() != null;
         try {
             applyService.apply(player, pending.prepared());
             ipcClient.ack(player.getUniqueId(), pending.seq());
@@ -118,9 +115,6 @@ public final class PlayerListener implements Listener {
             ipcClient.nack(new NackMessage(player.getUniqueId(), pending.seq(), "apply_failed",
                     String.valueOf(e.getMessage())));
             player.kick(Component.text("跨服数据应用失败，请重新连接"));
-        } finally {
-            // After the inventory write, never before: the apply replaces the whole inventory.
-            handoffManager.resolveParkedOnJoin(player.getUniqueId(), snapshotCarriedCursorItem);
         }
     }
 
