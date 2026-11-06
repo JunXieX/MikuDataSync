@@ -1,5 +1,6 @@
 package com.junxiex.mikudatasync.velocity;
 
+import com.junxiex.mikudatasync.common.ByteReader;
 import com.junxiex.mikudatasync.common.ByteWriter;
 import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
@@ -91,12 +92,11 @@ public final class JournalStore implements AutoCloseable {
         }
         byte[] payload = message.encode();
         byte[] header = encodeHeader(message.seq(), uuid, payload);
-        byte[] record = new byte[header.length + payload.length];
-        System.arraycopy(header, 0, record, 0, header.length);
-        System.arraycopy(payload, 0, record, header.length, payload.length);
-
         long offset = validLength;
-        writeAt(record, offset);
+        // Written as two buffers: joining them first would copy the whole envelope once more on every
+        // commit. The joined copy is only built while a compaction is replaying into the new file.
+        writeAt(header, offset);
+        writeAt(payload, offset + header.length);
         if (fsyncMode == VelocityConfig.FsyncMode.ALWAYS || force) {
             try {
                 channel.force(false);
@@ -110,10 +110,13 @@ public final class JournalStore implements AutoCloseable {
         } else {
             dirty.set(true);
         }
-        validLength = offset + record.length;
+        validLength = offset + header.length + payload.length;
         latestOffsets.put(uuid, offset);
         if (compacting) {
             // This record lives only in the file being replaced; replay it onto the new file.
+            byte[] record = new byte[header.length + payload.length];
+            System.arraycopy(header, 0, record, 0, header.length);
+            System.arraycopy(payload, 0, record, header.length, payload.length);
             pendingDuringCompaction.add(new PendingRecord(uuid, record));
         }
     }
@@ -351,7 +354,7 @@ public final class JournalStore implements AutoCloseable {
         if (record == null) {
             return null;
         }
-        return SnapshotMessage.decode(java.util.Arrays.copyOfRange(record, HEADER_BYTES, record.length));
+        return SnapshotMessage.decode(new ByteReader(record, HEADER_BYTES, record.length - HEADER_BYTES));
     }
 
     private byte[] readRecord(FileChannel source, long offset, UUID uuid) throws IOException {

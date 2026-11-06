@@ -80,19 +80,11 @@ public final class HandoffManager {
             return;
         }
         // The player left before the commit result was known. Waiting for it is what separates "the
-        // snapshot holds this item" (discard the local copy) from "nothing holds it" (drop it); the
-        // drop itself is scheduled on the entity thread because this callback runs on an IPC thread.
+        // snapshot holds this item" (discard the local copy) from "nothing holds it" (drop it).
         commit.whenComplete((stored, error) -> {
-            if (Boolean.TRUE.equals(stored)) {
-                return;
+            if (!Boolean.TRUE.equals(stored)) {
+                dropInWorld(uuid, carried);
             }
-            Player player = plugin.getServer().getPlayer(uuid);
-            if (player == null) {
-                PluginSchedulers.runOnGlobal(plugin, () -> dropInWorld(uuid, carried));
-                return;
-            }
-            PluginSchedulers.runOnEntityOrElse(plugin, player, () -> dropInWorld(uuid, carried),
-                    () -> dropInWorld(uuid, carried));
         });
     }
 
@@ -164,20 +156,31 @@ public final class HandoffManager {
         });
     }
 
-    /** Drops an item that can no longer be handed to the player, at the position it was taken from. */
+    /**
+     * Drops an item that can no longer be handed to the player, at the position it was taken from.
+     * Callers include IPC threads, so the drop itself is scheduled where that location is owned.
+     */
     private void dropInWorld(UUID uuid, Carried carried) {
-        try {
-            if (carried.world() != null && carried.location() != null) {
-                carried.world().dropItemNaturally(carried.location(), carried.item());
-                plugin.getLogger().warning("Cursor item for " + uuid
-                        + " was dropped into the world because the player was no longer available");
-                return;
-            }
-        } catch (Exception e) {
-            plugin.getLogger().warning("Failed to drop cursor item for " + uuid + ": " + e.getMessage());
+        if (carried.world() == null || carried.location() == null) {
+            plugin.getLogger().severe("Cursor item for " + uuid
+                    + " has no recorded position and could not be returned: " + carried.item().getType());
+            return;
         }
-        plugin.getLogger().severe("Cursor item for " + uuid
-                + " could not be returned to the player or the world: " + carried.item().getType());
+        try {
+            PluginSchedulers.runAtLocation(plugin, carried.location(), () -> {
+                try {
+                    carried.world().dropItemNaturally(carried.location(), carried.item());
+                    plugin.getLogger().warning("Cursor item for " + uuid
+                            + " was dropped into the world because the player was no longer available");
+                } catch (Exception e) {
+                    plugin.getLogger().severe("Failed to drop cursor item for " + uuid + ": " + e
+                            + " (item " + carried.item().getType() + " is lost)");
+                }
+            });
+        } catch (Exception e) {
+            plugin.getLogger().severe("Could not schedule the cursor item drop for " + uuid + ": " + e
+                    + " (item " + carried.item().getType() + " is lost)");
+        }
     }
 
     private static void returnItemToInventory(Player player, ItemStack item) {

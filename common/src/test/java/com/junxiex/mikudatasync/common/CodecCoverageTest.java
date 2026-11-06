@@ -177,25 +177,13 @@ class CodecCoverageTest {
     }
 
     @Test
-    void legacySchemaStillDecodes() throws Exception {
-        byte[] payload = new byte[] {1, 2, 3};
-        ByteWriter writer = new ByteWriter(64);
-        writer.writeInt(Protocol.MAGIC);
-        writer.writeByte(1);
-        writer.writeByte(1);
-        writer.writeInt(5023);
-        writer.writeShort(1);
-        writer.writeShort(Segment.CORE);
-        writer.writeInt(payload.length);
-        writer.writeBytes(payload);
-        byte[] body = writer.toByteArray();
-        int crc = Crc32c.compute(body, 0, body.length);
-        ByteWriter out = new ByteWriter(body.length + 4);
-        out.writeBytes(body);
-        out.writeInt(crc);
-        SnapshotEnvelope decoded = SnapshotEnvelope.decode(out.toByteArray());
-        assertEquals(1, decoded.schemaVersion());
-        assertArrayEquals(payload, decoded.segment(Segment.CORE));
+    void unknownSchemaVersionIsRejected() throws Exception {
+        byte[] bytes = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 1, Map.of(Segment.CORE, new byte[] {1}))
+                .encode();
+        // The schema byte sits right after the 4-byte magic; an older or newer layout must be refused
+        // rather than parsed as if the segment table were in the same place.
+        bytes[4] = 1;
+        assertThrows(ProtocolException.class, () -> SnapshotEnvelope.decode(bytes));
     }
 
     @Test

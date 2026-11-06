@@ -1,14 +1,12 @@
 package com.junxiex.mikudatasync.paper;
 
-import com.junxiex.mikudatasync.common.SnapshotEnvelope;
-
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Snapshots fetched during pre-login, waiting for PlayerJoinEvent. */
 public final class PendingSnapshots {
 
-    public record Pending(SnapshotEnvelope envelope, long seq, long createdAt, ApplyService.Prepared prepared) {
+    public record Pending(long seq, long createdAt, ApplyService.Prepared prepared) {
     }
 
     /** Entries older than this are dropped on the next access. */

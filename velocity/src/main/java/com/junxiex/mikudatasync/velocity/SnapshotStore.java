@@ -31,7 +31,6 @@ public final class SnapshotStore {
     }
 
     private final ConcurrentHashMap<UUID, Entry> entries = new ConcurrentHashMap<>();
-    private final java.util.concurrent.atomic.AtomicLong retainedBytes = new java.util.concurrent.atomic.AtomicLong();
     private final int maxSnapshotBytes;
     private final long maxRetainedBytes;
     private final JournalStore journal;
@@ -64,9 +63,10 @@ public final class SnapshotStore {
             return null;
         }
         // Deliberately not cached: with retain-offline-snapshots disabled this table must not grow
-        // with every pre-login read, and the journal is the authoritative copy anyway.
+        // with every pre-login read, and the journal is the authoritative copy anyway. The hash is
+        // left empty because dedup only compares against the table, never against a journal read.
         return new Entry(message.seq(), message.captureSeq(), 0L, message.saveCause(),
-                message.sourceServer(), message.envelope(), sha256Hex(message.envelope()), 0L);
+                message.sourceServer(), message.envelope(), "", 0L);
     }
 
     public synchronized long commit(UUID uuid, SnapshotMessage message) throws IOException, ProtocolException {
@@ -101,10 +101,8 @@ public final class SnapshotStore {
                     && !"selftest".equalsIgnoreCase(message.saveCause());
             journal.append(uuid, committed, force);
         }
-        Entry stored = new Entry(seq, message.captureSeq(), appliedSeq, message.saveCause(),
-                message.sourceServer(), message.envelope(), hash, System.currentTimeMillis());
-        Entry replaced = entries.put(uuid, stored);
-        retainedBytes.addAndGet(stored.envelope().length - (replaced == null ? 0 : replaced.envelope().length));
+        entries.put(uuid, new Entry(seq, message.captureSeq(), appliedSeq, message.saveCause(),
+                message.sourceServer(), message.envelope(), hash, System.currentTimeMillis()));
         enforceBudget();
         return seq;
     }
@@ -117,12 +115,17 @@ public final class SnapshotStore {
         if (maxRetainedBytes <= 0L || entries.size() < 32) {
             return;
         }
-        long total = retainedBytes.get();
+        // Summed on demand instead of being tracked on every commit: one pass only runs while over
+        // budget, and a counter updated outside the table's own lock can drift away from it.
+        long total = 0L;
+        for (Entry entry : entries.values()) {
+            total += entry.envelope().length;
+        }
         if (total <= maxRetainedBytes) {
             return;
         }
         // Evict down to a low-water mark. Stopping at the budget itself would put every following
-        // commit back over it, so the whole table would be copied and sorted on each commit.
+        // commit back over it, so the whole table would be sorted on each commit.
         long target = maxRetainedBytes - (maxRetainedBytes / 4L);
         List<java.util.Map.Entry<UUID, Entry>> byAge = new ArrayList<>(entries.size());
         entries.forEach((uuid, entry) -> byAge.add(java.util.Map.entry(uuid, entry)));
@@ -134,9 +137,7 @@ public final class SnapshotStore {
             if (!entries.remove(candidate.getKey(), candidate.getValue())) {
                 continue;
             }
-            int length = candidate.getValue().envelope().length;
-            retainedBytes.addAndGet(-length);
-            total -= length;
+            total -= candidate.getValue().envelope().length;
         }
     }
 
@@ -154,10 +155,7 @@ public final class SnapshotStore {
     }
 
     public void evict(UUID uuid) {
-        Entry removed = entries.remove(uuid);
-        if (removed != null) {
-            retainedBytes.addAndGet(-removed.envelope().length);
-        }
+        entries.remove(uuid);
     }
 
     public int size() {

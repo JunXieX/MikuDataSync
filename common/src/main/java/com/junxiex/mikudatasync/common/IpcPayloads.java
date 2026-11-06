@@ -98,7 +98,7 @@ public final class IpcPayloads {
     public static byte[] snapshotFound(SnapshotMessage message) {
         ByteWriter writer = new ByteWriter(256 + message.envelope().length);
         writer.writeBoolean(true);
-        writer.writeBytes(message.encode());
+        message.encodeTo(writer);
         return writer.toByteArray();
     }
 
@@ -124,7 +124,7 @@ public final class IpcPayloads {
             }
             return null;
         }
-        return SnapshotMessage.decode(reader.readBytes(reader.remaining()));
+        return SnapshotMessage.decode(reader);
     }
 
     public static byte[] putRequest(UUID uuid, SnapshotMessage message) {
@@ -141,7 +141,7 @@ public final class IpcPayloads {
         writer.writeLong(uuid.getMostSignificantBits());
         writer.writeLong(uuid.getLeastSignificantBits());
         writer.writeVarLong(handoffToken);
-        writer.writeBytes(message.encode());
+        message.encodeTo(writer);
         return writer.toByteArray();
     }
 
@@ -154,6 +154,6 @@ public final class IpcPayloads {
         ByteReader reader = new ByteReader(payload);
         uuidOut[0] = readUuid(reader);
         tokenOut[0] = reader.readVarLong();
-        return SnapshotMessage.decode(reader.readBytes(reader.remaining()));
+        return SnapshotMessage.decode(reader);
     }
 }

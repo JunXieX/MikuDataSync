@@ -6,14 +6,22 @@ import java.nio.charset.StandardCharsets;
 public final class ByteReader {
 
     private final byte[] data;
+    private final int end;
     private int position;
 
     public ByteReader(byte[] data) {
+        this(data, 0, data.length);
+    }
+
+    /** Reads {@code length} bytes of {@code data} starting at {@code offset} without copying them. */
+    public ByteReader(byte[] data, int offset, int length) {
         this.data = data;
+        this.position = offset;
+        this.end = offset + length;
     }
 
     public int remaining() {
-        return data.length - position;
+        return end - position;
     }
 
     private void require(int bytes) throws ProtocolException {

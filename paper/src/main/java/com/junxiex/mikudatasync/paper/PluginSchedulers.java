@@ -42,6 +42,15 @@ public final class PluginSchedulers {
         }
     }
 
+    /** Runs where the given location is owned: the main thread on Paper, its region thread on Folia. */
+    public static void runAtLocation(Plugin plugin, org.bukkit.Location location, Runnable action) {
+        if (FOLIA) {
+            Bukkit.getRegionScheduler().execute(plugin, location, action);
+        } else {
+            Bukkit.getScheduler().runTask(plugin, action);
+        }
+    }
+
     public static void runOnGlobal(Plugin plugin, Runnable action) {
         if (FOLIA) {
             Bukkit.getGlobalRegionScheduler().execute(plugin, action);

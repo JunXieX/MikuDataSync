@@ -39,10 +39,6 @@ public final class StageMetrics {
         return builder.toString();
     }
 
-    public static void reset() {
-        COUNTERS.clear();
-    }
-
     private static final class Counter {
         private final LongAdder count = new LongAdder();
         private final LongAdder total = new LongAdder();

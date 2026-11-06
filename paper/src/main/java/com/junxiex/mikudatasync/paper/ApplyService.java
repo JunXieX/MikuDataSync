@@ -87,16 +87,6 @@ public final class ApplyService {
         }
         byte[] maps = envelope.segment(Segment.MAPS);
         byte[] pdc = envelope.segment(Segment.PDC);
-        if (pdc != null) {
-            // Parsed here so a malformed blob is rejected before the first mutation instead of
-            // throwing after the inventory was already overwritten and kicking on every reconnect.
-            ItemStack carrier = new ItemStack(Material.STONE);
-            var carrierMeta = carrier.getItemMeta();
-            if (carrierMeta == null) {
-                throw new ProtocolException("cannot validate snapshot pdc");
-            }
-            carrierMeta.getPersistentDataContainer().readFromBytes(pdc, true);
-        }
         if (core != null) {
             GameMode.valueOf(core.gameMode());
         }
@@ -131,6 +121,22 @@ public final class ApplyService {
             // the player on every reconnect for as long as the snapshot stays current.
             Bukkit.getLogger().warning("MikuDataSyncApplyEvent listener failed: " + e);
         }
+        stageStart = System.nanoTime();
+        if (pdc != null) {
+            // First mutation of the apply: the PDC bytes are the only opaque blob left at this point,
+            // so a failure here happens before the inventory/health are touched.
+            if (config.pdcMerge()) {
+                ItemStack carrier = new ItemStack(Material.STONE);
+                var meta = carrier.getItemMeta();
+                if (meta != null) {
+                    meta.getPersistentDataContainer().readFromBytes(pdc, true);
+                    meta.getPersistentDataContainer().copyTo(player.getPersistentDataContainer(), false);
+                }
+            } else {
+                player.getPersistentDataContainer().readFromBytes(pdc, true);
+            }
+        }
+        StageMetrics.record("apply.pdc", System.nanoTime() - stageStart);
         if (core != null) {
             player.setGameMode(GameMode.valueOf(core.gameMode()));
         }
@@ -205,20 +211,6 @@ public final class ApplyService {
                 Bukkit.getLogger().warning("Failed to apply map data: " + e.getMessage());
             }
         }
-        stageStart = System.nanoTime();
-        if (pdc != null) {
-            if (config.pdcMerge()) {
-                ItemStack carrier = new ItemStack(Material.STONE);
-                var meta = carrier.getItemMeta();
-                if (meta != null) {
-                    meta.getPersistentDataContainer().readFromBytes(pdc, true);
-                    meta.getPersistentDataContainer().copyTo(player.getPersistentDataContainer(), false);
-                }
-            } else {
-                player.getPersistentDataContainer().readFromBytes(pdc, true);
-            }
-        }
-        StageMetrics.record("apply.pdc", System.nanoTime() - stageStart);
         // Advancements and statistics are NMS-reflective and non-critical: a failure here must not
         // abort the apply after the inventory was already written, because the player would then be
         // kicked on every reconnect with no way out.

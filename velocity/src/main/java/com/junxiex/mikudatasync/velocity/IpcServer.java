@@ -270,14 +270,20 @@ public final class IpcServer implements AutoCloseable {
                     socket.close();
                     continue;
                 }
-                socket.setTcpNoDelay(true);
-                workers.execute(() -> {
-                    try {
-                        handle(socket);
-                    } finally {
-                        connectionCount.decrementAndGet();
-                    }
-                });
+                try {
+                    socket.setTcpNoDelay(true);
+                    workers.execute(() -> {
+                        try {
+                            handle(socket);
+                        } finally {
+                            connectionCount.decrementAndGet();
+                        }
+                    });
+                } catch (IOException | java.util.concurrent.RejectedExecutionException e) {
+                    // The worker never started, so nothing else would ever release this slot.
+                    connectionCount.decrementAndGet();
+                    socket.close();
+                }
             } catch (IOException e) {
                 if (!closed.get()) {
                     logger.warn("IPC accept failed", e);

@@ -55,13 +55,11 @@ public final class IpcClient implements AutoCloseable {
     private final ConcurrentHashMap<Long, CompletableFuture<Frame>> pending = new ConcurrentHashMap<>();
     private final AtomicReference<State> state = new AtomicReference<>(State.DISCONNECTED);
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final Object writeLock = new Object();
     private static final java.util.concurrent.ScheduledExecutorService WATCHDOG =
             Executors.newSingleThreadScheduledExecutor(daemonFactory("mds-ipc-watchdog"));
 
     private volatile long backoffMs = 1000L;
     private volatile Socket socket;
-    private volatile DataInputStream in;
     private volatile DataOutputStream out;
     private volatile Consumer<Frame> frameHandler = frame -> {
     };
@@ -172,7 +170,6 @@ public final class IpcClient implements AutoCloseable {
         DataInputStream newIn = new DataInputStream(new BufferedInputStream(newSocket.getInputStream()));
         DataOutputStream newOut = new DataOutputStream(new BufferedOutputStream(newSocket.getOutputStream()));
         this.socket = newSocket;
-        this.in = newIn;
         this.out = newOut;
 
         sendHello(newOut);
@@ -294,19 +291,18 @@ public final class IpcClient implements AutoCloseable {
     /** A single frame write must not hold the writer thread longer than this. */
     private static final long WRITE_TIMEOUT_MS = 5_000L;
 
+    /** Only the writer thread calls this, so frames cannot interleave without a lock. */
     private void writeFrame(Frame frame) throws IOException {
-        synchronized (writeLock) {
-            DataOutputStream current = out;
-            if (current == null || state.get() != State.CONNECTED) {
-                throw new IOException("IPC is not connected");
-            }
-            long deadline = System.currentTimeMillis() + WRITE_TIMEOUT_MS;
-            Watchdog watchdog = Watchdog.arm(socket, deadline, logger);
-            try {
-                FrameCodec.write(current, frame);
-            } finally {
-                watchdog.cancel();
-            }
+        DataOutputStream current = out;
+        if (current == null || state.get() != State.CONNECTED) {
+            throw new IOException("IPC is not connected");
+        }
+        long deadline = System.currentTimeMillis() + WRITE_TIMEOUT_MS;
+        Watchdog watchdog = Watchdog.arm(socket, deadline, logger);
+        try {
+            FrameCodec.write(current, frame);
+        } finally {
+            watchdog.cancel();
         }
     }
 
@@ -401,7 +397,6 @@ public final class IpcClient implements AutoCloseable {
     private void closeSocket() {
         Socket current = socket;
         socket = null;
-        in = null;
         out = null;
         if (current != null) {
             try {

@@ -115,14 +115,6 @@ public final class ByteWriter {
         return writeBytes(bytes);
     }
 
-    public int size() {
-        return size;
-    }
-
-    public void reset() {
-        size = 0;
-    }
-
     public byte[] toByteArray() {
         return Arrays.copyOf(buffer, size);
     }

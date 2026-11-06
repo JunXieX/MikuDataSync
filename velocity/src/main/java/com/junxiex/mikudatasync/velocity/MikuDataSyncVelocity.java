@@ -24,8 +24,6 @@ import java.util.concurrent.TimeUnit;
 )
 public final class MikuDataSyncVelocity {
 
-
-
     private final ProxyServer server;
     private final Logger logger;
     private final Path dataDirectory;

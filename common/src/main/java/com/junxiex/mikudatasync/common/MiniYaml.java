@@ -54,6 +54,11 @@ public final class MiniYaml {
                 indents.remove(indents.size() - 1);
             }
             Map<String, Object> current = stack.get(stack.size() - 1);
+            if (current.containsKey(key)) {
+                // A repeated key silently kept the last value, so a typo looked like a setting that
+                // had no effect at all.
+                throw new ConfigException("line " + lineNumber + ": duplicate key '" + key + "'");
+            }
             if (value.isEmpty()) {
                 Map<String, Object> child = new LinkedHashMap<>();
                 current.put(key, child);

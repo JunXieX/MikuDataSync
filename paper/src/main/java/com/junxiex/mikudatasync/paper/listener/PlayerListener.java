@@ -74,10 +74,9 @@ public final class PlayerListener implements Listener {
             }
             // Version and segment validation lives in prepare(), which both the join and the
             // restore path go through; repeating it here would only duplicate the guard.
-            SnapshotEnvelope envelope = SnapshotEnvelope.decode(message.envelope());
-            ApplyService.Prepared prepared = applyService.prepare(envelope);
+            ApplyService.Prepared prepared = applyService.prepare(SnapshotEnvelope.decode(message.envelope()));
             if (!pendingSnapshots.put(uuid,
-                    new PendingSnapshots.Pending(envelope, message.seq(), System.currentTimeMillis(), prepared))) {
+                    new PendingSnapshots.Pending(message.seq(), System.currentTimeMillis(), prepared))) {
                 // Entering without the snapshot would mean playing on stale data and never ACKing.
                 unavailable(event, "too many pending snapshots");
             }
@@ -98,16 +97,12 @@ public final class PlayerListener implements Listener {
             applyService.apply(player, pending.prepared());
             ipcClient.ack(player.getUniqueId(), pending.seq());
         } catch (Exception e) {
-            Throwable cause = e;
-            while (cause.getCause() != null && cause instanceof java.lang.reflect.InvocationTargetException) {
-                cause = cause.getCause();
-            }
             skipQuitCapture.add(player.getUniqueId());
             com.junxiex.mikudatasync.common.Metrics.recordApplyFailure();
             plugin.getLogger().log(java.util.logging.Level.SEVERE,
-                    "Failed to apply snapshot for " + player.getName(), cause);
+                    "Failed to apply snapshot for " + player.getName(), e);
             ipcClient.nack(new NackMessage(player.getUniqueId(), pending.seq(), "apply_failed",
-                    String.valueOf(cause.getMessage())));
+                    String.valueOf(e.getMessage())));
             player.kick(Component.text("跨服数据应用失败，请重新连接"));
         }
     }

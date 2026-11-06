@@ -1,14 +1,10 @@
 package com.junxiex.mikudatasync.paper;
 
-import com.junxiex.mikudatasync.common.Protocol;
-import com.junxiex.mikudatasync.common.Segment;
-import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.UUID;
 import java.util.logging.Logger;
 
@@ -20,10 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Pure-logic tests for the classes that do not need a running server. */
 class PendingSnapshotsTest {
 
-    private static PendingSnapshots.Pending pending(long createdAt) throws Exception {
-        SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 1,
-                Map.of(Segment.CORE, new byte[] {1}));
-        return new PendingSnapshots.Pending(envelope, 1L, createdAt, null);
+    private static PendingSnapshots.Pending pending(long createdAt) {
+        return new PendingSnapshots.Pending(1L, createdAt, null);
     }
 
     @Test

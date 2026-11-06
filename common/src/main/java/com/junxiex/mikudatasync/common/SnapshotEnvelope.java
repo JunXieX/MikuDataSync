@@ -118,10 +118,6 @@ public final class SnapshotEnvelope {
             throw new ProtocolException("bad snapshot magic: 0x" + Integer.toHexString(magic));
         }
         int schemaVersion = reader.readByte();
-        if (schemaVersion == 1) {
-            // Read-only migration path for 1.1.8 and earlier journals.
-            return decodeLegacy(bytes);
-        }
         if (schemaVersion != Protocol.SCHEMA_VERSION) {
             throw new ProtocolException("unsupported snapshot schema: " + schemaVersion);
         }
@@ -190,45 +186,6 @@ public final class SnapshotEnvelope {
             }
         }
         return flags;
-    }
-
-    private static SnapshotEnvelope decodeLegacy(byte[] bytes) throws ProtocolException {
-        ByteReader reader = new ByteReader(bytes);
-        reader.readInt();
-        reader.readByte();
-        int flags = reader.readByte();
-        int dataVersion = reader.readInt();
-        int count = reader.readUnsignedShort();
-        if (count > MAX_SEGMENTS) {
-            throw new ProtocolException("invalid segment count: " + count);
-        }
-        TreeMap<Integer, byte[]> segments = new TreeMap<>();
-        for (int i = 0; i < count; i++) {
-            int id = reader.readUnsignedShort();
-            int length = reader.readInt();
-            if (id <= 0 || id > 0xFFFF) {
-                throw new ProtocolException("invalid segment id: " + id);
-            }
-            if (length < 0 || length > Protocol.MAX_SEGMENT_BYTES) {
-                throw new ProtocolException("invalid segment length: " + length);
-            }
-            if (segments.put(id, reader.readBytes(length)) != null) {
-                throw new ProtocolException("duplicate segment id: " + id);
-            }
-        }
-        if (reader.remaining() != 4) {
-            throw new ProtocolException("unexpected trailing bytes: " + reader.remaining());
-        }
-        int expectedCrc = reader.readInt();
-        int actualCrc = Crc32c.compute(bytes, 0, bytes.length - 4);
-        if (expectedCrc != actualCrc) {
-            throw new ProtocolException("snapshot crc mismatch");
-        }
-        SnapshotEnvelope envelope = new SnapshotEnvelope(1, dataVersion, segments);
-        if (envelope.flags() != flags) {
-            throw new ProtocolException("snapshot flags mismatch");
-        }
-        return envelope;
     }
 
     private static byte[] gzip(byte[] input) throws ProtocolException {

@@ -231,19 +231,4 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         }
     }
 
-    public PaperConfig config() {
-        return config;
-    }
-
-    public CaptureService captureService() {
-        return captureService;
-    }
-
-    public ApplyService applyService() {
-        return applyService;
-    }
-
-    public PendingSnapshots pendingSnapshots() {
-        return pendingSnapshots;
-    }
 }

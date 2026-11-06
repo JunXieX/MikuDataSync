@@ -17,25 +17,34 @@ public record SnapshotMessage(
         byte[] envelope) {
 
     public byte[] encode() {
-        int causeBytes = saveCause == null ? 0 : saveCause.getBytes(StandardCharsets.UTF_8).length;
-        if (causeBytes > Protocol.MAX_SAVE_CAUSE_BYTES) {
-            throw new IllegalArgumentException("saveCause is too long: " + causeBytes + " bytes");
-        }
-        int serverBytes = sourceServer == null ? 0 : sourceServer.getBytes(StandardCharsets.UTF_8).length;
-        if (serverBytes > Protocol.MAX_SERVER_ID_BYTES) {
-            throw new IllegalArgumentException("sourceServer is too long: " + serverBytes + " bytes");
-        }
         ByteWriter writer = new ByteWriter(256 + envelope.length);
-        writer.writeVarLong(seq);
-        writer.writeVarLong(captureSeq);
-        writer.writeUtf(saveCause == null ? "" : saveCause);
-        writer.writeUtf(sourceServer == null ? "" : sourceServer);
-        writer.writeLengthPrefixed(envelope);
+        encodeTo(writer);
         return writer.toByteArray();
     }
 
+    /** Writes into an existing buffer: the envelope is copied once, not once per wrapping layer. */
+    public void encodeTo(ByteWriter writer) {
+        String cause = saveCause == null ? "" : saveCause;
+        String server = sourceServer == null ? "" : sourceServer;
+        if (cause.getBytes(StandardCharsets.UTF_8).length > Protocol.MAX_SAVE_CAUSE_BYTES) {
+            throw new IllegalArgumentException("saveCause is too long: " + cause);
+        }
+        if (server.getBytes(StandardCharsets.UTF_8).length > Protocol.MAX_SERVER_ID_BYTES) {
+            throw new IllegalArgumentException("sourceServer is too long: " + server);
+        }
+        writer.writeVarLong(seq);
+        writer.writeVarLong(captureSeq);
+        writer.writeUtf(cause);
+        writer.writeUtf(server);
+        writer.writeLengthPrefixed(envelope);
+    }
+
     public static SnapshotMessage decode(byte[] payload) throws ProtocolException {
-        ByteReader reader = new ByteReader(payload);
+        return decode(new ByteReader(payload));
+    }
+
+    /** Reads from the current position and requires the reader to be exhausted afterwards. */
+    public static SnapshotMessage decode(ByteReader reader) throws ProtocolException {
         long seq = reader.readVarLong();
         long captureSeq = reader.readVarLong();
         String saveCause = reader.readUtf(Protocol.MAX_SAVE_CAUSE_BYTES);

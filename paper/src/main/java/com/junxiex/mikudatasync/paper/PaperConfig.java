@@ -5,7 +5,6 @@ import com.junxiex.mikudatasync.common.Segment;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 
 public record PaperConfig(
