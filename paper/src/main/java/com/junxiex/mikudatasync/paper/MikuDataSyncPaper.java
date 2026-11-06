@@ -140,12 +140,13 @@ public final class MikuDataSyncPaper extends JavaPlugin {
                     return;
                 }
                 UUID uuid = player.getUniqueId();
-                PluginSchedulers.runAsync(this, () ->
-                        ipcClient.putSnapshot(uuid, message, 5000L).whenComplete((seq, error) -> {
-                            if (error != null) {
-                                getLogger().fine("Periodic snapshot failed for " + uuid + ": " + error.getMessage());
-                            }
-                        }));
+                // Submitted from the entity thread on purpose: enqueueing the PUT anywhere else lets a
+                // periodic capture reach the proxy after a newer switch capture and overwrite it.
+                ipcClient.putSnapshot(uuid, message, 5000L).whenComplete((seq, error) -> {
+                    if (error != null) {
+                        getLogger().fine("Periodic snapshot failed for " + uuid + ": " + error.getMessage());
+                    }
+                });
             });
         }
     }

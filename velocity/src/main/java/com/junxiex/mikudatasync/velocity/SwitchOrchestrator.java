@@ -75,15 +75,16 @@ public final class SwitchOrchestrator {
                     // switch lock is held until that answer is sent: a retry in between would start a
                     // second handoff whose gate the late PUT could be mistaken for.
                     CompletableFuture.delayedExecutor(ABORT_GRACE_MS, TimeUnit.MILLISECONDS)
-                            .execute(() -> {
+                            .execute(() -> ipcServer.afterPendingCommits(() -> {
                                 try {
-                                    ipcServer.afterPendingCommits(() ->
-                                            ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT,
-                                                    IpcPayloads.abort(uuid, isCommitted(uuid, gateId))));
+                                    ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT,
+                                            IpcPayloads.abort(uuid, isCommitted(uuid, gateId)));
                                 } finally {
+                                    // Released only once the abort is on the wire: a retry before
+                                    // that would start a handoff the backend still considers busy.
                                     switching.remove(uuid);
                                 }
-                            });
+                            }));
                 }
                 Metrics.recordGate(System.nanoTime() - gateStart);
                 gate.complete(null);

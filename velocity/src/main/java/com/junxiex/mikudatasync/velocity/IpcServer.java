@@ -327,8 +327,8 @@ public final class IpcServer implements AutoCloseable {
                 }
             }
             if (!knownServers.isEmpty() && !knownServers.contains(serverId)) {
-                logger.warn("Backend server-id '{}' does not match any Velocity server name {}; switches to/from it will fail",
-                        serverId, knownServers);
+                logger.error("Backend server-id '{}' matches no Velocity server name {}; switches from it cannot "
+                        + "be flushed and will fall back to the last committed snapshot", serverId, knownServers);
             }
             logger.info("IPC backend connected: {}", serverId);
 
@@ -487,9 +487,10 @@ public final class IpcServer implements AutoCloseable {
         try {
             entry = store.get(uuid);
         } catch (IOException e) {
-            logger.error("Stored snapshot for {} is unreadable; refusing to answer GET", uuid, e);
-            connection.send(Opcode.ERROR, requestId, errorPayload("stored snapshot is unreadable"));
-            return;
+            // One corrupt record must not become "this player can never log in again": the data is
+            // already unreadable, so the player enters with local data and the log says why.
+            logger.error("Stored snapshot for {} is unreadable; answering as if there were none", uuid, e);
+            entry = null;
         }
         byte[] response = entry == null
                 ? IpcPayloads.snapshotMissing()
@@ -519,24 +520,24 @@ public final class IpcServer implements AutoCloseable {
             return;
         }
         flushRequestIds.remove(uuid, gateId);
-        boolean waiting = pendingRequests.containsKey(gateId);
-        completePending(gateId, frame);
-        if (waiting) {
+        if (completePending(gateId, frame)) {
             return;
         }
+        // The gate refused the frame because its timeout already completed it. Asking the future is
+        // what settles the race with that timeout: a sampling of the request table could report "the
+        // gate is waiting" for a request the timeout just removed.
         lateCommits.put(uuid, System.currentTimeMillis());
         long cutoff = System.currentTimeMillis() - 60_000L;
         lateCommits.entrySet().removeIf(entry -> entry.getValue() < cutoff);
     }
 
-    private void completePending(long requestId, Frame frame) {
+    /** Returns true when the waiting request accepted the frame instead of having timed out. */
+    private boolean completePending(long requestId, Frame frame) {
         if (requestId == 0L) {
-            return;
+            return false;
         }
         PendingRequest pending = pendingRequests.remove(requestId);
-        if (pending != null) {
-            pending.future().complete(frame);
-        }
+        return pending != null && pending.future().complete(frame);
     }
 
     private void failPending(long requestId, Throwable error) {

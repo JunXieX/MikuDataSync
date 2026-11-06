@@ -46,9 +46,9 @@ public final class SnapshotStore {
     }
 
     /**
-     * Returns the snapshot for this player. A record that exists on disk but cannot be read raises
-     * instead of looking like "no snapshot": silently treating a corrupt record as missing let a
-     * player log in with stale data and produced no log line at all.
+     * Returns the snapshot for this player, or null when there is none. A record that exists on disk
+     * but cannot be read raises instead of looking like "no snapshot": the caller decides, because
+     * only it knows whether "missing" is a safe answer.
      */
     public Entry get(UUID uuid) throws IOException {
         Entry entry = entries.get(uuid);

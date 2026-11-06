@@ -157,12 +157,13 @@ public final class PlayerListener implements Listener {
             }
             return;
         }
-        PluginSchedulers.runAsync(plugin, () ->
-                ipcClient.putSnapshot(uuid, message, 5000L).whenComplete((seq, error) -> {
-                    if (error != null) {
-                        plugin.getLogger().warning("Failed to persist quit snapshot for " + uuid + ": " + error.getMessage());
-                    }
-                }));
+        // Same reason as the periodic path: the quit capture is the newest state for this player, so
+        // its PUT has to be enqueued here rather than on another thread.
+        ipcClient.putSnapshot(uuid, message, 5000L).whenComplete((seq, error) -> {
+            if (error != null) {
+                plugin.getLogger().warning("Failed to persist quit snapshot for " + uuid + ": " + error.getMessage());
+            }
+        });
     }
 
     private void unavailable(AsyncPlayerPreLoginEvent event, String reason) {

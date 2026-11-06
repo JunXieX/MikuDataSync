@@ -284,8 +284,9 @@ public final class JournalStore implements AutoCloseable {
                         pendingDuringCompaction.clear();
                     } catch (IOException reopenFailure) {
                         broken = true;
-                        logger.error("Journal {} could not be reopened after a failed compaction; "
-                                + "snapshots are no longer persisted", path, reopenFailure);
+                        logger.error("Journal {} could not be reopened after a failed compaction; snapshots "
+                                + "are no longer persisted until the proxy is restarted with a writable journal",
+                                path, reopenFailure);
                     }
                 }
             }
