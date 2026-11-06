@@ -10,8 +10,10 @@ public record NackMessage(UUID uuid, long appliedSeq, String code, String messag
         writer.writeLong(uuid.getMostSignificantBits());
         writer.writeLong(uuid.getLeastSignificantBits());
         writer.writeVarLong(appliedSeq);
-        writer.writeUtf(code);
-        writer.writeUtf(message);
+        // Clipped to the reader's limits: an over-long exception message used to make the NACK
+        // undecodable, which closed the whole IPC connection and failed every other player's switch.
+        writer.writeUtf(Utf8.clip(code == null ? "" : code, 64));
+        writer.writeUtf(Utf8.clip(message == null ? "" : message, 512));
         return writer.toByteArray();
     }
 

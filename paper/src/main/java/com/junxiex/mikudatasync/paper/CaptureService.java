@@ -150,7 +150,13 @@ public final class CaptureService {
                 StageMetrics.record("capture.encode", System.nanoTime() - encodeStart);
             }
             SnapshotMessage message = new SnapshotMessage(0L, captureSeq, cause, serverId, encoded);
-            Bukkit.getPluginManager().callEvent(new MikuDataSyncCaptureEvent(player, cause, message));
+            try {
+                Bukkit.getPluginManager().callEvent(new MikuDataSyncCaptureEvent(player, cause, message));
+            } catch (RuntimeException e) {
+                // A broken listener in another plugin must not turn into "capture failed", which would
+                // refuse the switch and lose the quit snapshot.
+                logger.warning("MikuDataSyncCaptureEvent listener failed: " + e);
+            }
             return message;
         } catch (Throwable t) {
             // Contains StackOverflowError from deeply nested containers as well: escaping into the

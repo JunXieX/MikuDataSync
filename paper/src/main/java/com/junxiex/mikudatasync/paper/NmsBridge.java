@@ -356,7 +356,9 @@ public final class NmsBridge {
                 persistMaps(player, nested, null, budget, depth + 1);
                 bundle.setItems(java.util.List.of(nested));
                 item.setItemMeta(bundle);
-                inventory.setItem(i, item);
+                if (inventory != null) {
+                    inventory.setItem(i, item);
+                }
             }
         }
     }
@@ -521,13 +523,13 @@ public final class NmsBridge {
         for (MapDataList.Entry entry : fallback) {
             byId.put(entry.mapId(), entry);
         }
-        applyItemMaps(player, player.getInventory().getContents(), player.getInventory(), byId);
-        applyItemMaps(player, player.getEnderChest().getContents(), player.getEnderChest(), byId);
+        applyItemMaps(player, player.getInventory().getContents(), player.getInventory(), byId, 0);
+        applyItemMaps(player, player.getEnderChest().getContents(), player.getEnderChest(), byId, 0);
     }
 
     private static void applyItemMaps(Player player, ItemStack[] items,
                                       org.bukkit.inventory.Inventory inventory,
-                                      java.util.Map<Integer, MapDataList.Entry> fallback) {
+                                      java.util.Map<Integer, MapDataList.Entry> fallback, int depth) {
         for (int i = 0; i < items.length; i++) {
             ItemStack item = items[i];
             if (item == null || item.getType().isAir()) {
@@ -539,19 +541,23 @@ public final class NmsBridge {
             }
             if (meta instanceof MapMeta mapMeta && mapMeta.hasMapId()) {
                 applySingleMap(player, item, mapMeta, inventory, i, fallback);
-            } else if (meta instanceof org.bukkit.inventory.meta.BlockStateMeta blockState
+            } else if (depth < MAX_CONTAINER_DEPTH && meta instanceof org.bukkit.inventory.meta.BlockStateMeta blockState
                     && blockState.getBlockState() instanceof org.bukkit.block.Container container
                     && !container.getInventory().isEmpty()) {
-                applyItemMaps(player, container.getInventory().getContents(), container.getInventory(), fallback);
+                applyItemMaps(player, container.getInventory().getContents(), container.getInventory(), fallback,
+                        depth + 1);
                 blockState.setBlockState(container);
                 item.setItemMeta(blockState);
                 inventory.setItem(i, item);
-            } else if (meta instanceof org.bukkit.inventory.meta.BundleMeta bundle && bundle.hasItems()) {
+            } else if (depth < MAX_CONTAINER_DEPTH && meta instanceof org.bukkit.inventory.meta.BundleMeta bundle
+                    && bundle.hasItems()) {
                 ItemStack[] nested = bundle.getItems().toArray(ItemStack[]::new);
-                applyItemMaps(player, nested, null, fallback);
+                applyItemMaps(player, nested, null, fallback, depth + 1);
                 bundle.setItems(java.util.List.of(nested));
                 item.setItemMeta(bundle);
-                inventory.setItem(i, item);
+                if (inventory != null) {
+                    inventory.setItem(i, item);
+                }
             }
         }
     }
@@ -561,7 +567,10 @@ public final class NmsBridge {
                                        java.util.Map<Integer, MapDataList.Entry> fallback) {
         try {
             ItemMapData persisted = readItemMap(meta);
-            MapDataList.Entry captured = fallback.get(meta.getMapId());
+            // The MAPS segment is keyed by the id the map had on its source server. An item that is
+            // already bound on this server carries this server's id instead, so looking it up by the
+            // item's id would miss exactly the maps that were applied once before.
+            MapDataList.Entry captured = fallback.get(persisted == null ? meta.getMapId() : persisted.sourceMapId());
             if (captured != null) {
                 // The MAPS segment is rendered from the world state on every capture, while the
                 // embedded copy is written once per apply: the segment is the fresher colour source

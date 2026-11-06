@@ -74,7 +74,8 @@ public final class HandoffManager {
             return;
         }
         if (commit.isDone()) {
-            if (!Boolean.TRUE.equals(commit.getNow(false))) {
+            // null (timeout) counts as "may be stored": dropping a second copy is the safer error.
+            if (Boolean.FALSE.equals(commit.getNow(null))) {
                 dropInWorld(uuid, carried);
             }
             return;
@@ -82,7 +83,7 @@ public final class HandoffManager {
         // The player left before the commit result was known. Waiting for it is what separates "the
         // snapshot holds this item" (discard the local copy) from "nothing holds it" (drop it).
         commit.whenComplete((stored, error) -> {
-            if (!Boolean.TRUE.equals(stored)) {
+            if (Boolean.FALSE.equals(stored)) {
                 dropInWorld(uuid, carried);
             }
         });
@@ -104,9 +105,9 @@ public final class HandoffManager {
                     Boolean.TRUE.equals(stored) || snapshotCommitted));
             return;
         }
-        // The proxy's opinion and the local commit result can disagree; the snapshot counts as stored
-        // if either says so, because that is what decides whether a second copy may be handed out.
-        applyAbort(uuid, carried, snapshotCommitted || (commit != null && commit.getNow(false)));
+        // The proxy's answer is authoritative here: it decided whether the commit landed, and a commit
+        // it rejected is discarded on its side. The local result only adds "known to be stored".
+        applyAbort(uuid, carried, snapshotCommitted || Boolean.TRUE.equals(commit == null ? null : commit.getNow(null)));
     }
 
     private void applyAbort(UUID uuid, Carried carried, boolean stored) {
@@ -251,25 +252,24 @@ public final class HandoffManager {
         // the cursor item; the proxy ties it to the gate by player UUID, not by request id.
         CompletableFuture<Frame> commit = ipcClient.request(Opcode.PUT,
                 IpcPayloads.putRequest(uuid, message, requestId), PUT_TIMEOUT_MS);
-        // The cursor item is released only when the commit result is known: a success means the
-        // snapshot carries it (the local copy is discarded), a failure means nothing carries it (it is
-        // handed back). Deciding earlier would duplicate the item or lose it.
+        // Outcome tri-state: TRUE = stored, FALSE = definitely not stored, null = the PUT timed out and
+        // only the proxy can tell. The entry is kept until the unfreeze task consumes it, because that
+        // task has to distinguish "the commit failed" from "the answer never arrived".
         commit.whenComplete((frame, error) -> {
-            boolean stored = error == null;
+            Boolean stored = error == null ? Boolean.TRUE
+                    : isTimeout(error) ? null : Boolean.FALSE;
             outcome.complete(stored);
-            commits.remove(uuid, outcome);
-            if (stored) {
+            if (Boolean.TRUE.equals(stored)) {
                 Carried committedCopy = carriedItems.remove(uuid);
                 if (committedCopy != null) {
                     plugin.getLogger().fine("Cursor item for " + uuid
                             + " is carried by the committed switch snapshot");
                 }
-            } else {
+            } else if (stored == null) {
                 // A timeout does not prove the snapshot was lost: the commit may still land on the
-                // proxy. The item is therefore parked until the proxy's abort tells us whether the
-                // snapshot exists; only an explicit abort decides its fate.
-                plugin.getLogger().warning("Handoff snapshot for " + uuid + " was not confirmed: "
-                        + error.getMessage() + "; waiting for the abort decision");
+                // proxy. The item stays parked until the abort tells us which one happened.
+                plugin.getLogger().warning("Handoff snapshot for " + uuid + " was not confirmed in time: "
+                        + error + "; waiting for the abort decision");
             }
         });
         // The freeze itself still needs a bounded worst case: a passed gate does not guarantee the
@@ -279,15 +279,25 @@ public final class HandoffManager {
             try {
                 handoff.remove(uuid);
                 CompletableFuture<Boolean> pendingCommit = commits.remove(uuid);
-                boolean stored = pendingCommit != null && pendingCommit.getNow(false);
+                Boolean stored = pendingCommit == null ? Boolean.FALSE : pendingCommit.getNow(null);
                 Carried leftover = carriedItems.remove(uuid);
-                if (leftover != null && !stored) {
-                    // No commit was confirmed and no abort came, so nothing else carries the item.
+                if (leftover == null) {
+                    return;
+                }
+                if (Boolean.FALSE.equals(stored)) {
+                    // Definitely not stored and no abort came, so nothing else carries the item.
                     if (player.isOnline()) {
                         returnItemToInventory(player, leftover.item());
                     } else {
                         dropInWorld(uuid, leftover);
                     }
+                    return;
+                }
+                if (stored == null) {
+                    // The proxy never answered and never aborted. Handing the item out here could
+                    // duplicate the copy the snapshot may already carry, so the local one is dropped.
+                    plugin.getLogger().severe("Cursor item for " + uuid + " was dropped: the handoff "
+                            + "commit result is unknown and no abort arrived");
                 }
             } finally {
                 handoff.remove(uuid);
@@ -300,6 +310,12 @@ public final class HandoffManager {
                 dropInWorld(uuid, retired);
             }
         }, UNFREEZE_TICKS);
+    }
+
+    private static boolean isTimeout(Throwable error) {
+        Throwable cause = error instanceof java.util.concurrent.CompletionException && error.getCause() != null
+                ? error.getCause() : error;
+        return cause instanceof java.util.concurrent.TimeoutException;
     }
 
     private static byte[] error(String message) {

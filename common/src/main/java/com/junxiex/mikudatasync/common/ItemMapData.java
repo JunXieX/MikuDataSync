@@ -49,7 +49,7 @@ public record ItemMapData(String originServer, int sourceMapId, byte scale,
         List<CursorData> cursors = new ArrayList<>();
         if (reader.remaining() > 0) {
             int count = reader.readVarInt();
-            if (count < 0 || count > 512) {
+            if (count < 0 || count > reader.remaining()) {
                 throw new ProtocolException("invalid map cursor count: " + count);
             }
             for (int i = 0; i < count; i++) {

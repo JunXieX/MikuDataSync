@@ -1,6 +1,7 @@
 package com.junxiex.mikudatasync.paper.listener;
 
 import com.junxiex.mikudatasync.common.NackMessage;
+import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.paper.ApplyService;
@@ -63,25 +64,34 @@ public final class PlayerListener implements Listener {
             return;
         }
         UUID uuid = event.getUniqueId();
+        SnapshotMessage message;
         try {
-            SnapshotMessage message = ipcClient
-                    .getSnapshot(uuid, config.preloginFetchTimeoutMs())
+            message = ipcClient.getSnapshot(uuid, config.preloginFetchTimeoutMs())
                     // request() already applies orTimeout; the outer get only guards a stuck
                     // callback and must not double the login-thread budget.
                     .get(config.preloginFetchTimeoutMs() + 100L, TimeUnit.MILLISECONDS);
-            if (message == null) {
-                return;
-            }
-            // Version and segment validation lives in prepare(), which both the join and the
-            // restore path go through; repeating it here would only duplicate the guard.
-            ApplyService.Prepared prepared = applyService.prepare(SnapshotEnvelope.decode(message.envelope()));
-            if (!pendingSnapshots.put(uuid,
-                    new PendingSnapshots.Pending(message.seq(), System.currentTimeMillis(), prepared))) {
-                // Entering without the snapshot would mean playing on stale data and never ACKing.
-                unavailable(event, "too many pending snapshots");
-            }
         } catch (Exception e) {
             unavailable(event, "failed to fetch snapshot: " + e.getMessage());
+            return;
+        }
+        if (message == null) {
+            return;
+        }
+        ApplyService.Prepared prepared;
+        try {
+            prepared = applyService.prepare(SnapshotEnvelope.decode(message.envelope()));
+        } catch (ProtocolException | RuntimeException e) {
+            // The stored snapshot was written by another build (data or schema version) and cannot be
+            // applied here. Denying the login would lock this player out of every server until the
+            // journal is cleared, while the snapshot itself is unusable either way.
+            plugin.getLogger().warning("Stored snapshot for " + uuid + " does not fit this server ("
+                    + e.getMessage() + "); the player enters with local data");
+            return;
+        }
+        if (!pendingSnapshots.put(uuid,
+                new PendingSnapshots.Pending(message.seq(), System.currentTimeMillis(), prepared))) {
+            // Entering without the snapshot would mean playing on stale data and never ACKing.
+            unavailable(event, "too many pending snapshots");
         }
     }
 

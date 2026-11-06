@@ -28,10 +28,10 @@ public final class AttributeList {
     public static List<Entry> decode(byte[] payload) throws ProtocolException {
         ByteReader reader = new ByteReader(payload);
         int count = reader.readVarInt();
-        if (count < 0 || count > 256) {
+        if (count < 0 || count > reader.remaining()) {
             throw new ProtocolException("invalid attribute count: " + count);
         }
-        List<Entry> entries = new ArrayList<>(count);
+        List<Entry> entries = new ArrayList<>(Math.min(count, 256));
         for (int i = 0; i < count; i++) {
             entries.add(new Entry(reader.readUtf(128), reader.readDouble()));
         }
