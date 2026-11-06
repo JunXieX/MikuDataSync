@@ -15,11 +15,9 @@ import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.command.SimpleCommand;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
-import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.Component;
 
 import java.util.Locale;
-import java.util.concurrent.TimeUnit;
 
 public final class MdsCommand implements SimpleCommand {
 
@@ -93,11 +91,9 @@ public final class MdsCommand implements SimpleCommand {
                             + " | journal=" + store.journalStatus()
                             + " | fsync=" + config.fsyncMode()));
             case "doctor" -> source.sendMessage(Component.text(
-                    (plugin.startFailure() == null ? "ok: config loaded"
-                            : "FAILED to start: " + plugin.startFailure())
-                            + " | ipc=" + (ipcServer == null ? "down" : ipcServer.isRunning() ? "up" : "down")
+                    "config loaded | ipc=" + (ipcServer.isRunning() ? "up" : "down")
                             + " | failMode=" + config.failMode()
-                            + " | journal=" + (store == null ? "disabled" : store.journalStatus())));
+                            + " | journal=" + store.journalStatus()));
             case "switch" -> switchServer(source, arguments);
             case "backup" -> backup(source, arguments);
             case "backups" -> listBackups(source);
@@ -123,21 +119,12 @@ public final class MdsCommand implements SimpleCommand {
             source.sendMessage(Component.text("Unknown server: " + targetName));
             return;
         }
-        attempt(player, target.get(), targetName, 0);
-    }
-
-    private void attempt(Player player, RegisteredServer target, String targetName, int tries) {
-        player.createConnectionRequest(target).connect().whenComplete((result, error) -> {
-            boolean failed = error != null || !result.isSuccessful();
-            if (failed && tries < 1) {
-                plugin.logger().info("Retrying switch for {} to {} after first failure: {}",
-                        player.getUsername(), targetName, error == null ? result.getStatus() : error.getMessage());
-                server.getScheduler().buildTask(plugin,
-                        () -> attempt(player, target, targetName, tries + 1)).delay(1, TimeUnit.SECONDS).schedule();
-                return;
-            }
-            if (failed) {
-                player.sendMessage(Component.text("Switch failed: " + (error != null ? error.getMessage() : result.getStatus())));
+        // No automatic retry: every attempt runs the full handoff gate again, so a retry would
+        // issue a second flush for a switch that was just refused.
+        player.createConnectionRequest(target.get()).connect().whenComplete((result, error) -> {
+            if (error != null || !result.isSuccessful()) {
+                player.sendMessage(Component.text("Switch failed: "
+                        + (error != null ? error.getMessage() : result.getStatus())));
             } else {
                 player.sendMessage(Component.text("Switching to " + targetName));
             }

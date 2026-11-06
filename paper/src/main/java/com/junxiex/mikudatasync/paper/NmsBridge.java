@@ -213,8 +213,9 @@ public final class NmsBridge {
             return null;
         }
         Map<Integer, MapDataList.Entry> maps = new java.util.LinkedHashMap<>();
-        collectMaps(player, player.getInventory().getContents(), maps);
-        collectMaps(player, player.getEnderChest().getContents(), maps);
+        java.util.Set<Integer> embedded = new java.util.HashSet<>();
+        collectMaps(player, player.getInventory().getContents(), maps, embedded);
+        collectMaps(player, player.getEnderChest().getContents(), maps, embedded);
         if (maps.isEmpty()) {
             return null;
         }
@@ -222,34 +223,14 @@ public final class NmsBridge {
         if (entries.size() > MapDataList.MAX_MAPS) {
             // Keep the maps that have no embedded colour data first: those are the ones that would
             // otherwise lose their colours entirely, because the MAPS segment is their only carrier.
-            entries.sort(java.util.Comparator.comparingInt(entry -> hasEmbeddedData(player, entry.mapId()) ? 1 : 0));
+            entries.sort(java.util.Comparator.comparingInt(entry -> embedded.contains(entry.mapId()) ? 1 : 0));
             entries = new ArrayList<>(entries.subList(0, MapDataList.MAX_MAPS));
         }
         return MapDataList.encode(entries);
     }
 
-    /** True when some item already carries this map's colours in its persistent data. */
-    private static boolean hasEmbeddedData(Player player, int mapId) {
-        for (ItemStack item : player.getInventory().getContents()) {
-            if (item != null && item.getItemMeta() instanceof MapMeta meta && meta.hasMapId()
-                    && meta.getMapId() == mapId
-                    && meta.getPersistentDataContainer().has(MAP_ITEM_KEY,
-                    org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
-                return true;
-            }
-        }
-        for (ItemStack item : player.getEnderChest().getContents()) {
-            if (item != null && item.getItemMeta() instanceof MapMeta meta && meta.hasMapId()
-                    && meta.getMapId() == mapId
-                    && meta.getPersistentDataContainer().has(MAP_ITEM_KEY,
-                    org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static void collectMaps(Player player, ItemStack[] items, Map<Integer, MapDataList.Entry> out) {
+    private static void collectMaps(Player player, ItemStack[] items, Map<Integer, MapDataList.Entry> out,
+                                    java.util.Set<Integer> embedded) {
         if (items == null) {
             return;
         }
@@ -258,11 +239,17 @@ public final class NmsBridge {
                 continue;
             }
             int id = meta.getMapId();
+            if (meta.getPersistentDataContainer().has(MAP_ITEM_KEY,
+                    org.bukkit.persistence.PersistentDataType.BYTE_ARRAY)) {
+                embedded.add(id);
+            }
             if (out.containsKey(id)) {
                 continue;
             }
             try {
-                Object handle = mapData(player.getWorld(), id);
+                // Falls back to the other levels on Paper: a map carried out of its own dimension
+                // still has its colours stored in the level that owns the id.
+                Object handle = mapDataFor(player, id);
                 if (handle == null) {
                     continue;
                 }
@@ -431,18 +418,13 @@ public final class NmsBridge {
             for (org.bukkit.map.MapRenderer renderer : view.getRenderers()) {
                 renderer.render(view, canvas, player);
             }
+            // One saved-data lookup serves both the empty-canvas fallback and the map metadata.
+            Object savedData = mapDataFor(player, meta.getMapId());
             byte[] colors = canvas.pixels();
-            if (isAllZero(colors)) {
-                try {
-                    Object data = mapDataFor(player, meta.getMapId());
-                    if (data != null) {
-                        byte[] nmsColors = (byte[]) mapColorsField.get(data);
-                        if (nmsColors != null && nmsColors.length == colors.length) {
-                            colors = nmsColors.clone();
-                        }
-                    }
-                } catch (Throwable t) {
-                    logOnce("persistSingleMap.colors", t);
+            if (isAllZero(colors) && savedData != null) {
+                byte[] nmsColors = (byte[]) mapColorsField.get(savedData);
+                if (nmsColors != null && nmsColors.length == colors.length) {
+                    colors = nmsColors.clone();
                 }
             }
             java.util.List<ItemMapData.CursorData> cursors = new ArrayList<>();
@@ -459,16 +441,11 @@ public final class NmsBridge {
             int centerX = 0;
             int centerZ = 0;
             boolean locked = view.isLocked();
-            try {
-                Object data = mapDataFor(player, meta.getMapId());
-                if (data != null) {
-                    scale = (byte) mapScaleField.get(data);
-                    centerX = (int) mapCenterXField.get(data);
-                    centerZ = (int) mapCenterZField.get(data);
-                    locked = (boolean) mapLockedField.get(data);
-                }
-            } catch (Throwable t) {
-                logOnce("persistSingleMap.meta", t);
+            if (savedData != null) {
+                scale = (byte) mapScaleField.get(savedData);
+                centerX = (int) mapCenterXField.get(savedData);
+                centerZ = (int) mapCenterZField.get(savedData);
+                locked = (boolean) mapLockedField.get(savedData);
             }
             ItemMapData persisted = new ItemMapData(mapServerId, meta.getMapId(), scale, centerX, centerZ,
                     locked, colors.clone(), java.util.List.copyOf(cursors));
@@ -813,9 +790,8 @@ public final class NmsBridge {
         Object counter = serverPlayerStatsField.get(handle);
         Object existingRaw = statsCounterStatsField.get(counter);
         Map<?, ?> existingStats = existingRaw instanceof Map<?, ?> map ? map : null;
-        // Two passes: resolve everything first, then clear only stats this snapshot does not mention.
-        // A stat that cannot be resolved here (datapack or version drift) is left untouched instead of
-        // being zeroed, and a resolvable one is written without a destructive clear in between.
+        // Resolve first: a stat this build cannot map back to the snapshot (datapack or version
+        // drift) is left untouched, so only values that are actually written are ever replaced.
         List<Object[]> resolved = new ArrayList<>(entries.size());
         for (StatisticsList.Entry entry : entries) {
             Object statType = registryGetValue.invoke(statTypeRegistry, identifier(entry.statTypeKey()));
@@ -843,30 +819,6 @@ public final class NmsBridge {
             }
             resolved.add(new Object[] {stat, entry.value()});
         }
-        // Pre-fold the snapshot entries into a lookup table: comparing every existing stat against
-        // every entry would turn a login into hundreds of thousands of reflective calls.
-        Map<String, java.util.Set<String>> desiredKeys = new HashMap<>();
-        for (StatisticsList.Entry entry : entries) {
-            desiredKeys.computeIfAbsent(entry.statTypeKey(), key -> new java.util.HashSet<>())
-                    .add(entry.valueKey() == null ? "" : entry.valueKey());
-        }
-        if (existingStats != null) {
-            for (Object stat : new ArrayList<>(existingStats.keySet())) {
-                Object current = existingStats.get(stat);
-                if (current instanceof Number number && number.intValue() == 0) {
-                    continue;
-                }
-                // Stats this server cannot map back to a snapshot entry stay as they are: clearing
-                // them would erase progress that simply does not exist in this build's registries.
-                if (!matchesSnapshotEntry(stat, desiredKeys)) {
-                    continue;
-                }
-                try {
-                    statsCounterSetValue.invoke(counter, handle, stat, 0);
-                } catch (Throwable ignored) {
-                }
-            }
-        }
         for (Object[] pair : resolved) {
             if (existingStats != null) {
                 Object current = existingStats.get(pair[0]);
@@ -876,36 +828,6 @@ public final class NmsBridge {
             }
             statsCounterSetValue.invoke(counter, handle, pair[0], (int) pair[1]);
         }
-    }
-
-    /** True when this stat corresponds to an entry the snapshot explicitly carries. */
-    private static boolean matchesSnapshotEntry(Object stat, Map<String, java.util.Set<String>> desiredKeys)
-            throws Exception {
-        Object type = statGetType.invoke(stat);
-        Object value = statGetValue.invoke(stat);
-        if (type == null) {
-            return false;
-        }
-        Object typeId = registryGetKey.invoke(statTypeRegistry, type);
-        if (typeId == null) {
-            return false;
-        }
-        java.util.Set<String> values = desiredKeys.get(typeId.toString());
-        if (values == null) {
-            return false;
-        }
-        String valueKey;
-        if (type == statsCustomType) {
-            valueKey = String.valueOf(value);
-        } else {
-            Object registry = statTypeRegistries.get(type);
-            if (registry == null || value == null) {
-                return false;
-            }
-            Object valueId = registryGetKey.invoke(registry, value);
-            valueKey = valueId == null ? null : valueId.toString();
-        }
-        return valueKey != null && values.contains(valueKey);
     }
 
     // ------------------------------------------------------ advancements

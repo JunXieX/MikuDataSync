@@ -31,7 +31,6 @@ public final class MikuDataSyncVelocity {
     private VelocityConfig config;
     private SnapshotStore store;
     private IpcServer ipcServer;
-    private String startFailure;
     private MdsCommand command;
 
     @Inject
@@ -80,8 +79,7 @@ public final class MikuDataSyncVelocity {
         } catch (Exception e) {
             logger.error("MikuDataSync failed to start; cross-server sync is disabled", e);
             // Release whatever was already opened so a later restart is not blocked by a bound port
-            // or an open journal, and keep the reason visible through /mds doctor.
-            startFailure = String.valueOf(e.getMessage());
+            // or an open journal.
             if (command != null) {
                 command.close();
             }
@@ -111,11 +109,4 @@ public final class MikuDataSyncVelocity {
         return logger;
     }
 
-    public SnapshotStore store() {
-        return store;
-    }
-
-    public String startFailure() {
-        return startFailure;
-    }
 }
