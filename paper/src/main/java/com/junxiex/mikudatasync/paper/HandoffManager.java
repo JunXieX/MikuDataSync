@@ -26,12 +26,12 @@ public final class HandoffManager {
     private static final long UNFREEZE_TICKS = 60L;
 
     /**
-     * How long a parked cursor item waits for the proxy's abort before it is settled locally. It has to
-     * outlast the slowest legal gate timeout plus the abort grace window, otherwise the local fallback
-     * would decide while the proxy is still about to answer.
+     * How long a parked cursor item waits for a definitive answer. The PUT itself gives up after
+     * {@link #PUT_TIMEOUT_MS} and the proxy's abort arrives earlier than this in every configuration,
+     * so by the time it runs the commit outcome is known and the player is either still here (the
+     * switch failed) or gone (the snapshot carries the item).
      */
-    private static final long MAX_SWITCH_TIMEOUT_MS = 30_000L;
-    private static final long ITEM_SETTLE_TICKS = (MAX_SWITCH_TIMEOUT_MS + 2_000L) / 50L;
+    private static final long ITEM_SETTLE_TICKS = 5L * 20L;
 
     /**
      * Budget for the PUT that carries the handoff snapshot. It has to stay below the unfreeze window:
@@ -65,11 +65,28 @@ public final class HandoffManager {
 
     /**
      * Releases the freeze when the player is leaving anyway (quit during a handoff). The cursor item
-     * stays parked: on quit the only outcomes are "the snapshot carries it" or "drop it in the world",
-     * and only the proxy can tell which, so the abort (or the settle timer) decides.
+     * stays parked while the PUT is still in flight: only its outcome (or the proxy's abort) tells
+     * whether the snapshot carries the item or it has to be dropped into the world.
      */
     public void clear(UUID uuid) {
         handoff.remove(uuid);
+        CompletableFuture<Boolean> commit = commits.get(uuid);
+        if (commit != null && !commit.isDone()) {
+            return;
+        }
+        Carried carried = carriedItems.remove(uuid);
+        commits.remove(uuid);
+        if (carried != null && Boolean.FALSE.equals(commit == null ? null : commit.getNow(null))) {
+            // The PUT failed definitively while the player was leaving, so nothing carries the item.
+            dropInWorld(uuid, carried);
+        }
+    }
+
+    /** Drops any state left by an earlier handoff: a new session is governed by the snapshot. */
+    public void discardParked(UUID uuid) {
+        handoff.remove(uuid);
+        carriedItems.remove(uuid);
+        commits.remove(uuid);
     }
 
     /**
@@ -241,11 +258,10 @@ public final class HandoffManager {
                     : isTimeout(error) ? null : Boolean.FALSE;
             outcome.complete(stored);
             if (Boolean.TRUE.equals(stored)) {
-                Carried committedCopy = carriedItems.remove(uuid);
-                if (committedCopy != null) {
-                    plugin.getLogger().fine("Cursor item for " + uuid
-                            + " is carried by the committed switch snapshot");
-                }
+                // Kept parked: if the switch still fails to take the player away, the item has to go
+                // back into their inventory, and only the quit event or the settle timer can tell.
+                plugin.getLogger().fine("Cursor item for " + uuid
+                        + " is carried by the committed switch snapshot");
             } else if (stored == null) {
                 // A timeout does not prove the snapshot was lost: the commit may still land on the
                 // proxy. The item stays parked until the abort tells us which one happened.
@@ -253,10 +269,8 @@ public final class HandoffManager {
                         + error + "; waiting for the abort decision");
             }
         });
-        // The freeze itself still needs a bounded worst case: a passed gate does not guarantee the
-        // target connection succeeds, and a player must not stay frozen forever. The parked cursor
-        // item is released here when no abort arrived to decide it.
-        // The freeze is released on its own short timer; the parked item waits for the proxy's answer.
+        // The freeze itself needs a bounded worst case (a passed gate does not guarantee the target
+        // connection succeeds); the parked cursor item waits on its own, longer, timer.
         PluginSchedulers.runDelayed(plugin, player, () -> handoff.remove(uuid), () -> handoff.remove(uuid),
                 UNFREEZE_TICKS);
         PluginSchedulers.runDelayed(plugin, player,
@@ -270,7 +284,14 @@ public final class HandoffManager {
      */
     private void settleParkedItem(UUID uuid, Player player, boolean entityGone) {
         handoff.remove(uuid);
-        CompletableFuture<Boolean> pendingCommit = commits.remove(uuid);
+        CompletableFuture<Boolean> pendingCommit = commits.get(uuid);
+        if (pendingCommit != null && !pendingCommit.isDone()) {
+            // Folia retires the entity before the PUT can answer; waiting for the outcome is what keeps
+            // the item from being discarded while the snapshot may still accept it.
+            pendingCommit.whenComplete((stored, error) -> settleParkedItem(uuid, player, true));
+            return;
+        }
+        commits.remove(uuid);
         Boolean stored = pendingCommit == null ? Boolean.FALSE : pendingCommit.getNow(null);
         Carried leftover = carriedItems.remove(uuid);
         if (leftover == null) {

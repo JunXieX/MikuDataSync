@@ -99,6 +99,9 @@ public final class PlayerListener implements Listener {
     @EventHandler(priority = EventPriority.LOWEST)
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
+        // Anything a previous handoff left parked belongs to that session; this one starts from the
+        // snapshot, otherwise a player who switched away and back would receive the item twice.
+        handoffManager.discardParked(player.getUniqueId());
         PendingSnapshots.Pending pending = pendingSnapshots.remove(player.getUniqueId());
         if (pending == null) {
             // Brand-new player: the proxy has no snapshot, so the local data stays authoritative.
