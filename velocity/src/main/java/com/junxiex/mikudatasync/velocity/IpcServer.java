@@ -568,7 +568,7 @@ public final class IpcServer implements AutoCloseable {
     }
 
     private static byte[] errorPayload(String message) {
-        return new ByteWriter(64).writeUtf(message).toByteArray();
+        return IpcPayloads.error(message);
     }
 
     private static void send(DataOutputStream out, Opcode opcode, long requestId, byte[] payload) throws IOException {

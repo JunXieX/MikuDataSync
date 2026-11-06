@@ -115,8 +115,8 @@ public final class SnapshotStore {
         if (maxRetainedBytes <= 0L || entries.size() < 32) {
             return;
         }
-        // Summed on demand instead of being tracked on every commit: one pass only runs while over
-        // budget, and a counter updated outside the table's own lock can drift away from it.
+        // Summed on demand: a counter updated by both commit and evict drifts once the two interleave,
+        // and this pass only runs for tables above the entry floor.
         long total = 0L;
         for (Entry entry : entries.values()) {
             total += entry.envelope().length;

@@ -26,6 +26,14 @@ public final class HandoffManager {
     private static final long UNFREEZE_TICKS = 60L;
 
     /**
+     * How long a parked cursor item waits for the proxy's abort before it is settled locally. It has to
+     * outlast the slowest legal gate timeout plus the abort grace window, otherwise the local fallback
+     * would decide while the proxy is still about to answer.
+     */
+    private static final long MAX_SWITCH_TIMEOUT_MS = 30_000L;
+    private static final long ITEM_SETTLE_TICKS = (MAX_SWITCH_TIMEOUT_MS + 2_000L) / 50L;
+
+    /**
      * Budget for the PUT that carries the handoff snapshot. It has to stay below the unfreeze window:
      * after the deadline the leftover is settled with {@code getNow}, which would otherwise treat a
      * PUT that is still in flight as "not stored" and hand the cursor item out twice.
@@ -57,36 +65,11 @@ public final class HandoffManager {
 
     /**
      * Releases the freeze when the player is leaving anyway (quit during a handoff). The cursor item
-     * follows the commit result: it is dropped into the world only when the snapshot did not store it.
-     * A commit that still has not answered is left to the delayed unfreeze task, which runs on the
-     * entity thread; a completion callback runs on an IPC thread and must not touch world state.
+     * stays parked: on quit the only outcomes are "the snapshot carries it" or "drop it in the world",
+     * and only the proxy can tell which, so the abort (or the settle timer) decides.
      */
     public void clear(UUID uuid) {
         handoff.remove(uuid);
-        Carried carried = carriedItems.remove(uuid);
-        CompletableFuture<Boolean> commit = commits.remove(uuid);
-        if (carried == null) {
-            return;
-        }
-        if (commit == null) {
-            // The PUT was never sent, so nothing carries the item.
-            dropInWorld(uuid, carried);
-            return;
-        }
-        if (commit.isDone()) {
-            // null (timeout) counts as "may be stored": dropping a second copy is the safer error.
-            if (Boolean.FALSE.equals(commit.getNow(null))) {
-                dropInWorld(uuid, carried);
-            }
-            return;
-        }
-        // The player left before the commit result was known. Waiting for it is what separates "the
-        // snapshot holds this item" (discard the local copy) from "nothing holds it" (drop it).
-        commit.whenComplete((stored, error) -> {
-            if (Boolean.FALSE.equals(stored)) {
-                dropInWorld(uuid, carried);
-            }
-        });
     }
 
     /**
@@ -106,8 +89,8 @@ public final class HandoffManager {
             return;
         }
         // The proxy's answer is authoritative here: it decided whether the commit landed, and a commit
-        // it rejected is discarded on its side. The local result only adds "known to be stored".
-        applyAbort(uuid, carried, snapshotCommitted || Boolean.TRUE.equals(commit == null ? null : commit.getNow(null)));
+        // it rejected is discarded on its side. The local result can only add "known to be stored".
+        applyAbort(uuid, carried, snapshotCommitted || (commit != null && Boolean.TRUE.equals(commit.getNow(null))));
     }
 
     private void applyAbort(UUID uuid, Carried carried, boolean stored) {
@@ -148,13 +131,7 @@ public final class HandoffManager {
             } finally {
                 handoff.remove(uuid);
             }
-        }, () -> {
-            handoff.remove(uuid);
-            Carried retiredCarried = carriedItems.remove(uuid);
-            if (retiredCarried != null) {
-                dropInWorld(uuid, retiredCarried);
-            }
-        });
+        }, () -> settleParkedItem(uuid, player, true));
     }
 
     /**
@@ -279,9 +256,12 @@ public final class HandoffManager {
         // The freeze itself still needs a bounded worst case: a passed gate does not guarantee the
         // target connection succeeds, and a player must not stay frozen forever. The parked cursor
         // item is released here when no abort arrived to decide it.
+        // The freeze is released on its own short timer; the parked item waits for the proxy's answer.
+        PluginSchedulers.runDelayed(plugin, player, () -> handoff.remove(uuid), () -> handoff.remove(uuid),
+                UNFREEZE_TICKS);
         PluginSchedulers.runDelayed(plugin, player,
                 () -> settleParkedItem(uuid, player, false),
-                () -> settleParkedItem(uuid, player, true), UNFREEZE_TICKS);
+                () -> settleParkedItem(uuid, player, true), ITEM_SETTLE_TICKS);
     }
 
     /**

@@ -138,20 +138,18 @@ public final class MikuDataSyncPaper extends JavaPlugin {
         long spacing = Math.max(1L, (periodTicks / 2L) / players.size());
         for (int index = 0; index < players.size(); index++) {
             Player player = players.get(index);
-            if (pendingSnapshots.isUnsynced(player.getUniqueId())) {
-                continue;
-            }
-            if (handoffManager.isHandingOff(player.getUniqueId())) {
-                // The switch flush already owns this player's snapshot; a periodic capture now would
-                // race the final PUT and could overwrite it with a pre-flush state.
-                continue;
-            }
             PluginSchedulers.runDelayed(this, player, () -> {
+                UUID uuid = player.getUniqueId();
+                if (!player.isOnline() || pendingSnapshots.isUnsynced(uuid) || handoffManager.isHandingOff(uuid)) {
+                    // Checked here, on the entity thread and immediately before the capture: the switch
+                    // flush owns this player's snapshot, and a capture enqueued next to it would be
+                    // ordered after it and overwrite the flushed state.
+                    return;
+                }
                 SnapshotMessage message = captureService.capture(player, "periodic");
                 if (message == null) {
                     return;
                 }
-                UUID uuid = player.getUniqueId();
                 // Submitted from the entity thread on purpose: enqueueing the PUT anywhere else lets a
                 // periodic capture reach the proxy after a newer switch capture and overwrite it.
                 ipcClient.putSnapshot(uuid, message, 5000L).whenComplete((seq, error) -> {

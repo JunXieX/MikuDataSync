@@ -572,10 +572,9 @@ public final class NmsBridge {
                                        java.util.Map<Integer, MapDataList.Entry> fallback) {
         try {
             ItemMapData persisted = readItemMap(meta);
-            // The MAPS segment is keyed by the id the map had on its source server. An item that is
-            // already bound on this server carries this server's id instead, so looking it up by the
-            // item's id would miss exactly the maps that were applied once before.
-            MapDataList.Entry captured = fallback.get(persisted == null ? meta.getMapId() : persisted.sourceMapId());
+            // The MAPS segment is keyed by the id the item carried when the snapshot was taken, which
+            // is the id this item still has on arrival; the embedded data only supplies identity.
+            MapDataList.Entry captured = fallback.get(meta.getMapId());
             if (captured != null) {
                 // The MAPS segment is rendered from the world state on every capture, while the
                 // embedded copy is written once per apply: the segment is the fresher colour source
