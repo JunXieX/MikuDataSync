@@ -23,7 +23,6 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -55,7 +54,7 @@ class IpcServerTest {
                 64L << 20, 256L << 20, null);
         journal = new JournalStore(tempDir.resolve("journal.mds"), VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE,
                 LoggerFactory.getLogger("test"));
-        store = new SnapshotStore(1 << 20, journal);
+        store = new SnapshotStore(1 << 20, journal, 0L);
         server = new IpcServer(LoggerFactory.getLogger("test"), config, store, Set.of(SERVER_ID));
         server.start();
         socket = new Socket("127.0.0.1", server.boundPort());
@@ -96,7 +95,7 @@ class IpcServerTest {
     }
 
     @Test
-    void putGetAndAckFlow() throws Exception {
+    void putGetAndPingFlow() throws Exception {
         UUID uuid = UUID.randomUUID();
         FrameCodec.write(out, new Frame(Opcode.PUT, 10L, IpcPayloads.putRequest(uuid, message((byte) 7))));
         Frame ok = FrameCodec.read(in, Protocol.MAX_FRAME_BYTES);
@@ -110,11 +109,9 @@ class IpcServerTest {
         assertNotNull(read);
         assertEquals(1L, read.seq());
 
-        FrameCodec.write(out, new Frame(Opcode.ACK, 12L, IpcPayloads.ack(uuid, 1L)));
-        Frame pong = new Frame(Opcode.PING, 13L, new byte[0]);
-        FrameCodec.write(out, pong);
+        FrameCodec.write(out, new Frame(Opcode.PING, 13L, new byte[0]));
         assertEquals(Opcode.PONG, FrameCodec.read(in, Protocol.MAX_FRAME_BYTES).opcode());
-        assertEquals(1L, store.get(uuid).appliedSeq());
+        assertEquals(1L, store.get(uuid).seq());
     }
 
     @Test

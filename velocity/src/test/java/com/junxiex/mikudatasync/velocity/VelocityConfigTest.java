@@ -1,6 +1,7 @@
 package com.junxiex.mikudatasync.velocity;
 
 import com.junxiex.mikudatasync.common.ConfigException;
+import com.junxiex.mikudatasync.common.Protocol;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -8,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,13 +48,30 @@ class VelocityConfigTest {
     }
 
     @Test
-    void smallGetWaitIsRaisedInsteadOfRejected() throws Exception {
-        // 1.5.x shipped get-wait-ms: 300 next to switch-timeout-ms: 1500; refusing to start would
-        // deny every login on every backend after an upgrade.
+    void getWaitIsKeptInsteadOfRaisedToTheSwitchTimeout() throws Exception {
+        // A wait longer than the backend's pre-login budget (500ms by default) can never be honoured:
+        // the backend gives up first and refuses the login, so the configured value is kept as is.
         write("protocol:\n  secret: 0123456789abcdef\nsync:\n  switch-timeout-ms: 2000\n  get-wait-ms: 300\n");
         VelocityConfig config = VelocityConfig.load(tempDir);
-        assertEquals(2000, config.getWaitMs());
-        assertTrue(config.warning() != null && !config.warning().isBlank());
+        assertEquals(300, config.getWaitMs());
+        assertEquals(2000, config.switchTimeoutMs());
+    }
+
+    @Test
+    void switchTimeoutBeyondTheBackendSettlementWindowIsLowered() throws Exception {
+        // Refusing to start would deny every login; the gate is lowered instead and the log says why.
+        write("protocol:\n  secret: 0123456789abcdef\nsync:\n  switch-timeout-ms: 5000\n");
+        VelocityConfig config = VelocityConfig.load(tempDir);
+        assertEquals(2000, config.switchTimeoutMs());
+        assertNotNull(config.warning());
+    }
+
+    @Test
+    void placeholderSecretIsReported() throws Exception {
+        write("protocol:\n  secret: \"" + Protocol.PLACEHOLDER_SECRET + "\"\n");
+        String warning = VelocityConfig.load(tempDir).warning();
+        assertNotNull(warning);
+        assertTrue(warning.contains("protocol.secret"));
     }
 
     @Test
@@ -60,7 +79,8 @@ class VelocityConfigTest {
         write("protocol:\n  secret: 0123456789abcdef\n");
         VelocityConfig config = VelocityConfig.load(tempDir);
         assertEquals("mikudatasync.admin", config.commandPermission());
-        assertTrue(config.getWaitMs() >= config.switchTimeoutMs());
+        // Below the Paper side's prelogin-fetch-timeout-ms default of 500, otherwise the wait is lost.
+        assertTrue(config.getWaitMs() < 500);
         assertEquals(64L * 1024 * 1024, config.compactionThresholdBytes());
     }
 }

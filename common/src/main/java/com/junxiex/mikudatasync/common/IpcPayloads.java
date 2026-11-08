@@ -34,24 +34,6 @@ public final class IpcPayloads {
         return uuid(uuid);
     }
 
-    public static byte[] ack(UUID uuid, long appliedSeq) {
-        return new ByteWriter(24)
-                .writeLong(uuid.getMostSignificantBits())
-                .writeLong(uuid.getLeastSignificantBits())
-                .writeVarLong(appliedSeq)
-                .toByteArray();
-    }
-
-    public static long readAck(byte[] payload, UUID[] uuidOut) throws ProtocolException {
-        ByteReader reader = new ByteReader(payload);
-        uuidOut[0] = readUuid(reader);
-        long appliedSeq = reader.readVarLong();
-        if (reader.remaining() != 0) {
-            throw new ProtocolException("unexpected trailing bytes in ack payload");
-        }
-        return appliedSeq;
-    }
-
     /**
      * Abort payload: the UUID plus whether the proxy already committed the handoff snapshot. When it
      * was committed the cursor item only lives inside that snapshot, so the backend must not put a

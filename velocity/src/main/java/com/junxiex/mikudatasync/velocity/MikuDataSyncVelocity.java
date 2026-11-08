@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 @Plugin(
         id = "mikudatasync",
         name = "MikuDataSync",
-        version = "1.8.0",
+        version = "1.9.0",
         description = "Cross-server player data synchronization",
         authors = {"JunXieX"},
         url = "https://github.com/JunXieX/MikuDataSync"
@@ -60,6 +60,14 @@ public final class MikuDataSyncVelocity {
             ipcServer = new IpcServer(logger, config, store, knownServers);
             ipcServer.start();
 
+            // Registered before the listeners: a duplicate /mds from another plugin throws here, and
+            // failing with nothing half-registered is better than leaving listeners running against a
+            // closed store.
+            var meta = server.getCommandManager().metaBuilder("mds").plugin(this).build();
+            command = new MdsCommand(this, server, store, ipcServer, config,
+                    new BackupService(dataDirectory.resolve("backups"), config.backupsKeep(), logger));
+            server.getCommandManager().register(meta, command);
+
             server.getEventManager().register(this, new ProxyListener(this, server, logger, store, config));
             server.getEventManager().register(this, new SwitchOrchestrator(logger, config, ipcServer));
             long flushSeconds = Math.max(1, config.periodicFlushSeconds());
@@ -70,10 +78,6 @@ public final class MikuDataSyncVelocity {
                     })
                     .repeat(flushSeconds, TimeUnit.SECONDS)
                     .schedule();
-            var meta = server.getCommandManager().metaBuilder("mds").plugin(this).build();
-            command = new MdsCommand(this, server, store, ipcServer, config,
-                    new BackupService(dataDirectory.resolve("backups"), config.backupsKeep(), logger));
-            server.getCommandManager().register(meta, command);
             logger.info("MikuDataSync enabled (protocol {}, journal {})",
                     com.junxiex.mikudatasync.common.Protocol.PROTOCOL_VERSION, store.journalStatus());
         } catch (Exception e) {
@@ -89,6 +93,11 @@ public final class MikuDataSyncVelocity {
             if (store != null) {
                 store.close();
             }
+            // Cleared so the shutdown event does not close the journal a second time and report a
+            // "last snapshot may be lost" error for a store that was never opened.
+            command = null;
+            ipcServer = null;
+            store = null;
         }
     }
 

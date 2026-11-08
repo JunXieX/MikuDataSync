@@ -13,7 +13,6 @@ public enum Opcode {
     PUT_OK(13),
     FLUSH_REQ(14),
     HANDOFF_ABORT(15),
-    ACK(16),
     NACK(17),
 
     PING(20),

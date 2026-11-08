@@ -3,7 +3,9 @@ package com.junxiex.mikudatasync.paper;
 import com.junxiex.mikudatasync.common.Frame;
 import com.junxiex.mikudatasync.common.IpcPayloads;
 import com.junxiex.mikudatasync.common.Opcode;
+import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
+import net.kyori.adventure.text.Component;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
@@ -101,12 +103,7 @@ public final class HandoffManager {
     private void applyAbort(UUID uuid, Carried carried, boolean stored) {
         Player player = plugin.getServer().getPlayer(uuid);
         if (player == null || !player.isOnline()) {
-            handoff.remove(uuid);
-            if (carried != null && !stored) {
-                // The player is already gone and nothing else carries the item. A world drop at the
-                // recorded position is the only form that survives entity removal.
-                dropInWorld(uuid, carried);
-            }
+            settleWithoutPlayer(uuid, carried, stored);
             return;
         }
         // The abort frame arrives on the IPC reader thread; inventory/menu state belongs to the
@@ -136,7 +133,20 @@ public final class HandoffManager {
             } finally {
                 handoff.remove(uuid);
             }
-        }, () -> settleParkedItem(uuid, player, true));
+        }, () -> settleWithoutPlayer(uuid, carried, stored));
+    }
+
+    /**
+     * The player is gone, so the menu is discarded with them: without a stored snapshot the item has
+     * to reach the world, which is the only form that survives entity removal. Reached from the abort
+     * path both directly and through the retired callback, so it must not read the parked table - the
+     * abort already took the entry out of it.
+     */
+    private void settleWithoutPlayer(UUID uuid, Carried carried, boolean stored) {
+        handoff.remove(uuid);
+        if (carried != null && !stored) {
+            dropInWorld(uuid, carried);
+        }
     }
 
     /**
@@ -186,9 +196,16 @@ public final class HandoffManager {
 
     private void captureAndRespond(Player player, long requestId) {
         UUID uuid = player.getUniqueId();
-        if (handoff.contains(uuid)) {
+        if (!player.isOnline()) {
+            // Quit between the FLUSH_REQ and this task. Capturing now would PUT a snapshot that the
+            // quit path already wrote, without the cursor item that path took out of the menu.
+            ipcClient.respond(requestId, Opcode.ERROR, error("player not online"));
+            return;
+        }
+        if (handoff.contains(uuid) || carriedItems.containsKey(uuid)) {
             // A previous handoff for this player is still being settled. Serving this one too would
-            // overwrite its commit future and its carried cursor item.
+            // overwrite its commit future, and a second capture would write a snapshot without the
+            // cursor item the first one is still holding.
             ipcClient.respond(requestId, Opcode.ERROR, error("handoff already in progress"));
             return;
         }
@@ -206,6 +223,17 @@ public final class HandoffManager {
         if (carried != null && carried.getType().isAir()) {
             // The bridge returns the empty stack rather than null; air is not an item to carry around.
             carried = null;
+        }
+        // The segment carries a presence flag plus a length varint around the item bytes.
+        if (carried != null && carried.serializeAsBytes().length + 8 > Protocol.MAX_SEGMENT_BYTES) {
+            // One item that cannot fit a segment makes every capture fail, so the switch would be
+            // refused anyway - but with "capture failed" and after the menu was cleared. Refusing here
+            // keeps the item where the player can move it and names the actual cause.
+            commits.remove(uuid);
+            handoff.remove(uuid);
+            ipcClient.respond(requestId, Opcode.ERROR, error("cursor item too large to sync"));
+            player.sendMessage(Component.text("光标上的物品过大，无法跨服同步；请先放进背包或箱子再切服"));
+            return;
         }
         if (cursorSync) {
             if (carried != null) {
@@ -267,10 +295,6 @@ public final class HandoffManager {
     }
 
     /**
-     * Decides the fate of a cursor item parked by a handoff whose commit result is still pending when
-     * the freeze window ends. The item is only handed out when the commit is known to have failed.
-     */
-    /**
      * Single place that decides what happens to a cursor item taken out of the menu by a handoff.
      *
      * <p>The item is handed to the player only when that cannot produce a second copy: either the
@@ -280,15 +304,25 @@ public final class HandoffManager {
      * recoverable from the journal, a duplicated one is not.
      */
     private void settleParkedItem(UUID uuid, Player player, boolean entityGone) {
-        handoff.remove(uuid);
+        // The freeze flag is owned by the unfreeze timer and by abort(); releasing it here would let
+        // this handoff lift the freeze of a newer one.
         CompletableFuture<Boolean> commit = commits.get(uuid);
         if (commit != null && !commit.isDone()) {
             // Folia retires the entity before the PUT can answer; deciding when the outcome is known is
-            // what keeps the item from being discarded while the snapshot may still accept it.
-            commit.whenComplete((stored, error) -> settleParkedItem(uuid, player, true));
+            // what keeps the item from being discarded while the snapshot may still accept it. The
+            // entityGone flag has to survive the wait: a settle that started on a live entity must not
+            // turn into "the player is gone" just because the answer arrived later. The callback runs on
+            // an IPC thread, so the settle itself goes back to the entity it may have to hand items to.
+            commit.whenComplete((stored, error) -> PluginSchedulers.runOnEntityOrElse(plugin, player,
+                    () -> settleParkedItem(uuid, player, entityGone),
+                    () -> settleParkedItem(uuid, player, true)));
             return;
         }
-        commits.remove(uuid);
+        if (commit != null) {
+            // Identity-checked: a retry that started after the freeze expired owns its own entry and
+            // must not have it consumed by this handoff's settle.
+            commits.remove(uuid, commit);
+        }
         Carried leftover = carriedItems.remove(uuid);
         if (leftover == null) {
             return;

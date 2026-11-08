@@ -75,16 +75,16 @@ public final class SwitchOrchestrator {
                     // switch lock is held until that answer is sent: a retry in between would start a
                     // second handoff whose gate the late PUT could be mistaken for.
                     CompletableFuture.delayedExecutor(ABORT_GRACE_MS, TimeUnit.MILLISECONDS)
-                            .execute(() -> ipcServer.afterPendingCommits(() -> {
-                                try {
-                                    ipcServer.send(sourceServer, Opcode.HANDOFF_ABORT,
-                                            IpcPayloads.abort(uuid, isCommitted(uuid, gateId)));
-                                } finally {
-                                    // Released only once the abort is on the wire: a retry before
-                                    // that would start a handoff the backend still considers busy.
-                                    switching.remove(uuid);
-                                }
-                            }));
+                            .execute(() -> ipcServer.afterPendingCommits(() ->
+                                    // The decision is taken here, after the queued commits; the write
+                                    // itself goes to the reply pool so a stalled backend cannot block
+                                    // this thread, which every other player's commit shares.
+                                    ipcServer.sendAsync(sourceServer, Opcode.HANDOFF_ABORT,
+                                            IpcPayloads.abort(uuid, isCommitted(uuid, gateId)),
+                                            // Released only once the abort is on the wire: a retry
+                                            // before that would start a handoff the backend still
+                                            // considers busy.
+                                            () -> switching.remove(uuid))));
                 }
                 Metrics.recordGate(System.nanoTime() - gateStart);
                 gate.complete(null);

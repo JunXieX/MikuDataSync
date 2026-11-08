@@ -10,7 +10,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 public final class MikuDataSyncPaper extends JavaPlugin {
 
@@ -112,13 +111,10 @@ public final class MikuDataSyncPaper extends JavaPlugin {
     private void startPeriodicSnapshots() {
         // Map bindings are written in batches instead of once per map on the entity thread. This is
         // independent of snapshot scheduling, so it runs even when periodic snapshots are disabled.
-        PluginSchedulers.runTimer(this, () -> {
-            if (mapBindings != null) {
+        PluginSchedulers.runTimer(this, () ->
                 // The flush rewrites the properties file; keeping it off the tick thread matters once
                 // the binding table has grown.
-                PluginSchedulers.runAsync(this, mapBindings::flush);
-            }
-        }, 100L, 100L);
+                PluginSchedulers.runAsync(this, mapBindings::flush), 100L, 100L);
         int seconds = config.periodicSnapshotSeconds();
         if (seconds <= 0) {
             return;
@@ -164,15 +160,15 @@ public final class MikuDataSyncPaper extends JavaPlugin {
     @Override
     public void onDisable() {
         removeRegisteredPermission();
+        // onDisable also runs when onEnable bailed out early, so everything it would have built can
+        // still be null here.
         if (mapBindings != null) {
             mapBindings.flush();
         }
-        if (ipcClient == null) {
+        if (ipcClient == null || captureService == null) {
             return;
         }
-        if (captureService != null) {
-            flushShutdownSnapshots();
-        }
+        flushShutdownSnapshots();
         ipcClient.awaitPending(1000L);
         ipcClient.drainWrites(500L);
         ipcClient.close();
@@ -227,6 +223,13 @@ public final class MikuDataSyncPaper extends JavaPlugin {
 
     private void flushOneShutdownSnapshot(Player player) {
         UUID uuid = player.getUniqueId();
+        if (pendingSnapshots.isUnsynced(uuid) || handoffManager.isHandingOff(uuid)
+                || handoffManager.hasParkedItem(uuid)) {
+            // Same guards as the periodic and quit paths. An unsynced session would overwrite a
+            // snapshot it cannot even read, and a parked cursor item is not in the inventory this
+            // capture would serialize.
+            return;
+        }
         try {
             SnapshotMessage message = captureService.capture(player, "shutdown");
             if (message != null) {

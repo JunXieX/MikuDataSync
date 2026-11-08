@@ -1,6 +1,5 @@
 package com.junxiex.mikudatasync.paper.command;
 
-import com.junxiex.mikudatasync.paper.MikuDataSyncPaper;
 import com.junxiex.mikudatasync.common.ItemMapData;
 import com.junxiex.mikudatasync.common.MapDataList;
 import com.junxiex.mikudatasync.paper.MdsMapRenderer;
@@ -42,7 +41,7 @@ public final class DebugCommand {
     private DebugCommand() {
     }
 
-    public static LiteralCommandNode<CommandSourceStack> node(MikuDataSyncPaper plugin, PaperConfig config) {
+    public static LiteralCommandNode<CommandSourceStack> node(PaperConfig config) {
         return Commands.literal("debug")
                 .then(Commands.literal("info").executes(context -> {
                     CommandSender sender = context.getSource().getSender();

@@ -16,16 +16,10 @@ public final class CodecBench {
     }
 
     public static Result run(int warmupIterations, int measureIterations) {
-        return run(warmupIterations, measureIterations, () -> {
-        });
-    }
-
-    private static Result run(int warmupIterations, int measureIterations, Runnable tick) {
         SnapshotEnvelope envelope = sampleEnvelope();
         try {
             for (int i = 0; i < warmupIterations; i++) {
                 SnapshotEnvelope.decode(envelope.encode());
-                tick.run();
             }
             int payloadBytes = envelope.encode().length;
             long[] samples = new long[measureIterations];
@@ -33,7 +27,6 @@ public final class CodecBench {
                 long start = System.nanoTime();
                 SnapshotEnvelope.decode(envelope.encode());
                 samples[i] = System.nanoTime() - start;
-                tick.run();
             }
             Arrays.sort(samples);
             long p50 = samples[measureIterations / 2];
@@ -87,20 +80,16 @@ public final class CodecBench {
         random.nextBytes(enderChest);
         random.nextBytes(pdc);
 
-        try {
-            return new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 4321, java.util.Map.of(
-                    Segment.INVENTORY, inventory,
-                    Segment.ENDER_CHEST, enderChest,
-                    Segment.CORE, core.encode(),
-                    Segment.EFFECTS, EffectList.encode(effects),
-                    Segment.ATTRIBUTES, AttributeList.encode(attributes),
-                    Segment.STATISTICS, StatisticsList.encode(statistics),
-                    Segment.ADVANCEMENTS, AdvancementList.encode(advancements),
-                    Segment.PDC, pdc,
-                    Segment.MISC, MiscData.EMPTY.encode()
-            ));
-        } catch (RuntimeException e) {
-            throw new IllegalStateException(e);
-        }
+        return new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 4321, java.util.Map.of(
+                Segment.INVENTORY, inventory,
+                Segment.ENDER_CHEST, enderChest,
+                Segment.CORE, core.encode(),
+                Segment.EFFECTS, EffectList.encode(effects),
+                Segment.ATTRIBUTES, AttributeList.encode(attributes),
+                Segment.STATISTICS, StatisticsList.encode(statistics),
+                Segment.ADVANCEMENTS, AdvancementList.encode(advancements),
+                Segment.PDC, pdc,
+                Segment.MISC, MiscData.EMPTY.encode()
+        ));
     }
 }

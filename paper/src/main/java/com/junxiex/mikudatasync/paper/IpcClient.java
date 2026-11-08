@@ -131,10 +131,6 @@ public final class IpcClient implements AutoCloseable {
         }
     }
 
-    public void ack(UUID uuid, long appliedSeq) {
-        respond(0L, Opcode.ACK, IpcPayloads.ack(uuid, appliedSeq));
-    }
-
     private void runLoop() {
         while (!closed.get()) {
             try {
@@ -213,41 +209,43 @@ public final class IpcClient implements AutoCloseable {
     }
 
     private void onFrame(Frame frame) {
-        // The opcode decides. A server-initiated request (flush, abort, restore, backup) can carry a
+        // ERROR always answers a proxy-initiated request (a refused flush/backup/restore) and carries
+        // an id from the proxy's own counter, never one of this side's requests. Matching it against
+        // the pending table let an id collision fail an unrelated request, and a failed ping closes
+        // the whole connection.
+        if (frame.opcode() == Opcode.ERROR) {
+            logger.warning("IPC error frame: " + readErrorMessage(frame.payload()));
+            return;
+        }
+        // The opcode decides. A proxy-initiated request (flush, abort, restore, backup) can carry a
         // request id that a local request is also using, and looking the id up first would swallow the
         // request into the pending table as if it were that request's answer.
         if (isReply(frame.opcode())) {
             CompletableFuture<Frame> future = pending.remove(frame.requestId());
             if (future != null) {
-                // An ERROR frame that answers a request must fail it. Treating it as a normal response
-                // made a failed snapshot read look like "this player has no snapshot", which silently
-                // let the player join with stale data.
+                // A NACK for our PUT must fail the request: treating it as a normal response made a
+                // discarded handoff look like a successful commit.
                 if (frame.opcode() == Opcode.NACK) {
                     try {
                         NackMessage nack = NackMessage.decode(frame.payload());
-                        future.completeExceptionally(new IOException("backend NACK: " + nack.code()
+                        future.completeExceptionally(new IOException("IPC NACK: " + nack.code()
                                 + " " + nack.message()));
                     } catch (ProtocolException e) {
                         future.completeExceptionally(e);
                     }
-                } else if (frame.opcode() == Opcode.ERROR) {
-                    future.completeExceptionally(new IOException("backend error: " + readErrorMessage(frame.payload())));
                 } else {
                     future.complete(frame);
                 }
-                return;
-            }
-            if (frame.opcode() == Opcode.ERROR) {
-                logger.warning("IPC error frame: " + readErrorMessage(frame.payload()));
                 return;
             }
         }
         frameHandler.accept(frame);
     }
 
+    /** Replies this side can receive: answers to GET, PUT and PING. */
     private static boolean isReply(Opcode opcode) {
         return switch (opcode) {
-            case SNAPSHOT, PUT_OK, PONG, NACK, ERROR, BACKUP_RES, RESTORE_RES -> true;
+            case SNAPSHOT, PUT_OK, PONG, NACK -> true;
             default -> false;
         };
     }

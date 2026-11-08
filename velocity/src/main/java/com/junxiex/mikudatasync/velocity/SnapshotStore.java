@@ -21,7 +21,6 @@ public final class SnapshotStore {
     public record Entry(
             long seq,
             long captureSeq,
-            long appliedSeq,
             String saveCause,
             String sourceServer,
             byte[] envelope,
@@ -34,10 +33,6 @@ public final class SnapshotStore {
     private final int maxSnapshotBytes;
     private final long maxRetainedBytes;
     private final JournalStore journal;
-
-    public SnapshotStore(int maxSnapshotBytes, JournalStore journal) {
-        this(maxSnapshotBytes, journal, 0L);
-    }
 
     public SnapshotStore(int maxSnapshotBytes, JournalStore journal, long maxRetainedBytes) {
         this.maxSnapshotBytes = maxSnapshotBytes;
@@ -55,9 +50,6 @@ public final class SnapshotStore {
         if (entry != null) {
             return entry;
         }
-        if (journal == null) {
-            return null;
-        }
         SnapshotMessage message = journal.get(uuid);
         if (message == null) {
             return null;
@@ -65,7 +57,7 @@ public final class SnapshotStore {
         // Deliberately not cached: with retain-offline-snapshots disabled this table must not grow
         // with every pre-login read, and the journal is the authoritative copy anyway. The hash is
         // left empty because dedup only compares against the table, never against a journal read.
-        return new Entry(message.seq(), message.captureSeq(), 0L, message.saveCause(),
+        return new Entry(message.seq(), message.captureSeq(), message.saveCause(),
                 message.sourceServer(), message.envelope(), "", 0L);
     }
 
@@ -75,33 +67,32 @@ public final class SnapshotStore {
         }
         String hash = sha256Hex(message.envelope());
         Entry previous = entries.get(uuid);
-        if (previous == null && journal != null) {
+        if (previous == null) {
             // Sequence numbers must stay monotonic across eviction and restarts; otherwise a player
             // that was evicted while offline comes back with seq=1 and dedup stops working.
             long persistedSeq = journal.latestSeq(uuid);
             if (persistedSeq > 0L) {
-                // appliedSeq is not persisted; keep the estimate monotonic with the stored sequence so
-                // ACK bookkeeping cannot regress after a restart.
-                previous = new Entry(persistedSeq, message.captureSeq(), persistedSeq - 1L, message.saveCause(),
+                // The hash stays empty: the record is only needed for its sequence number, and dedup
+                // against a journal read would need the whole payload again.
+                previous = new Entry(persistedSeq, message.captureSeq(), message.saveCause(),
                         message.sourceServer(), new byte[0], "", 0L);
             }
         }
         if (previous != null && !previous.hash().isEmpty() && previous.hash().equals(hash)) {
-            if (journal != null && !"periodic".equalsIgnoreCase(message.saveCause())) {
+            if (!"periodic".equalsIgnoreCase(message.saveCause())) {
+                // Deduped commits still have to be durable before the caller sees PUT_OK: the previous
+                // write may have been an unforced periodic one.
                 journal.forceIfDirty();
             }
             return previous.seq();
         }
         long seq = previous == null ? 1L : previous.seq() + 1L;
-        long appliedSeq = previous == null ? 0L : previous.appliedSeq();
         SnapshotMessage committed = new SnapshotMessage(seq, message.captureSeq(), message.saveCause(),
                 message.sourceServer(), message.envelope());
-        if (journal != null) {
-            boolean force = !"periodic".equalsIgnoreCase(message.saveCause())
-                    && !"selftest".equalsIgnoreCase(message.saveCause());
-            journal.append(uuid, committed, force);
-        }
-        entries.put(uuid, new Entry(seq, message.captureSeq(), appliedSeq, message.saveCause(),
+        boolean force = !"periodic".equalsIgnoreCase(message.saveCause())
+                && !"selftest".equalsIgnoreCase(message.saveCause());
+        journal.append(uuid, committed, force);
+        entries.put(uuid, new Entry(seq, message.captureSeq(), message.saveCause(),
                 message.sourceServer(), message.envelope(), hash, System.currentTimeMillis()));
         enforceBudget();
         return seq;
@@ -141,19 +132,6 @@ public final class SnapshotStore {
         }
     }
 
-    public void ack(UUID uuid, long appliedSeq) {
-        entries.computeIfPresent(uuid, (id, entry) -> new Entry(
-                entry.seq(),
-                entry.captureSeq(),
-                Math.max(entry.appliedSeq(), appliedSeq),
-                entry.saveCause(),
-                entry.sourceServer(),
-                entry.envelope(),
-                entry.hash(),
-                entry.updatedAt()
-        ));
-    }
-
     public void evict(UUID uuid) {
         entries.remove(uuid);
     }
@@ -163,29 +141,20 @@ public final class SnapshotStore {
     }
 
     public String journalStatus() {
-        if (journal == null) {
-            return "disabled";
-        }
         String state = journal.isBroken() ? ", degraded=true" : "";
         return "bytes=" + journal.size() + ", players=" + journal.trackedPlayers() + state;
     }
 
     public void forceJournal() {
-        if (journal != null) {
-            journal.forceIfDirty();
-        }
+        journal.forceIfDirty();
     }
 
     public void maybeCompact() {
-        if (journal != null) {
-            journal.maybeCompact();
-        }
+        journal.maybeCompact();
     }
 
     public void close() {
-        if (journal != null) {
-            journal.close();
-        }
+        journal.close();
     }
 
     private static String sha256Hex(byte[] data) {

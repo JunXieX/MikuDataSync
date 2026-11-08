@@ -10,6 +10,7 @@ import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,18 +25,21 @@ class PendingSnapshotsTest {
     void expiredEntriesAreDroppedOnWrite() throws Exception {
         PendingSnapshots snapshots = new PendingSnapshots();
         UUID stale = UUID.randomUUID();
+        UUID fresh = UUID.randomUUID();
         assertTrue(snapshots.put(stale, pending(System.currentTimeMillis() - 120_000L)));
-        assertTrue(snapshots.put(UUID.randomUUID(), pending(System.currentTimeMillis())));
+        assertTrue(snapshots.put(fresh, pending(System.currentTimeMillis())));
         assertNull(snapshots.remove(stale));
-        assertEquals(1, snapshots.size());
+        assertNotNull(snapshots.remove(fresh), "a live entry must survive the eviction pass");
     }
 
     @Test
-    void removeOfExpiredEntryReturnsNull() throws Exception {
+    void removeStillHandsOutAnEntryThatSurvivedEviction() throws Exception {
+        // Expiry is table hygiene, not a login decision: a slow login must still get the snapshot it
+        // fetched, otherwise its quit capture overwrites that snapshot with this server's data.
         PendingSnapshots snapshots = new PendingSnapshots();
         UUID uuid = UUID.randomUUID();
         assertTrue(snapshots.put(uuid, pending(System.currentTimeMillis() - 120_000L)));
-        assertNull(snapshots.remove(uuid));
+        assertNotNull(snapshots.remove(uuid));
     }
 
     @Test
@@ -46,7 +50,6 @@ class PendingSnapshotsTest {
         }
         UUID newcomer = UUID.randomUUID();
         assertFalse(snapshots.put(newcomer, pending(System.currentTimeMillis())));
-        assertEquals(256, snapshots.size());
         assertNull(snapshots.remove(newcomer));
     }
 

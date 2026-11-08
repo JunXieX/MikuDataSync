@@ -26,9 +26,11 @@ import java.util.Set;
 import java.util.logging.Logger;
 
 /**
- * Single place for reflective NMS access (Mojang mappings as shipped by Paper).
- * M2 uses it for the container cursor item; M2b adds statistics and advancements.
- * All bridges are resolved once at enable and degrade to "unavailable" on failure.
+ * Single place for reflective NMS access (Mojang mappings as shipped by Paper): the container cursor
+ * item, map saved data, statistics and advancements.
+ *
+ * <p>Every bridge is resolved once at enable. A bridge that does not resolve disables its feature
+ * instead of failing the plugin: version drift must degrade the sync, never lock players out.
  */
 public final class NmsBridge {
 
@@ -315,11 +317,17 @@ public final class NmsBridge {
         }
     }
 
-    private static void persistMaps(Player player, ItemStack[] items, org.bukkit.inventory.Inventory inventory,
-                                    int[] budget, int depth) {
+    /**
+     * Returns whether anything was written. Containers and bundles are only rebuilt when a nested map
+     * was actually embedded: rewriting every shulker on every capture costs an NBT round trip per
+     * container and pushes an identical slot update to the client.
+     */
+    private static boolean persistMaps(Player player, ItemStack[] items,
+                                       org.bukkit.inventory.Inventory inventory, int[] budget, int depth) {
         if (items == null || depth > MAX_CONTAINER_DEPTH) {
-            return;
+            return false;
         }
+        boolean changed = false;
         for (int i = 0; i < items.length; i++) {
             ItemStack item = items[i];
             if (item == null || item.getType().isAir()) {
@@ -342,28 +350,34 @@ public final class NmsBridge {
                 }
                 if (persistSingleMap(player, item, mapMeta, inventory, i)) {
                     budget[0] -= MapDataList.COLORS_LENGTH + 160;
+                    changed = true;
                 }
             } else if (meta instanceof org.bukkit.inventory.meta.BlockStateMeta blockState
                     && blockState.getBlockState() instanceof org.bukkit.block.Container container
                     && !container.getInventory().isEmpty()) {
-                persistMaps(player, container.getInventory().getContents(), container.getInventory(), budget,
-                        depth + 1);
-                blockState.setBlockState(container);
-                item.setItemMeta(blockState);
-                // A bundle recurses with no owning inventory, so the item is already updated in place.
-                if (inventory != null) {
-                    inventory.setItem(i, item);
+                if (persistMaps(player, container.getInventory().getContents(), container.getInventory(),
+                        budget, depth + 1)) {
+                    blockState.setBlockState(container);
+                    item.setItemMeta(blockState);
+                    if (inventory != null) {
+                        inventory.setItem(i, item);
+                    }
+                    changed = true;
                 }
             } else if (meta instanceof org.bukkit.inventory.meta.BundleMeta bundle && bundle.hasItems()) {
                 ItemStack[] nested = bundle.getItems().toArray(ItemStack[]::new);
-                persistMaps(player, nested, null, budget, depth + 1);
-                bundle.setItems(java.util.List.of(nested));
-                item.setItemMeta(bundle);
-                if (inventory != null) {
-                    inventory.setItem(i, item);
+                if (persistMaps(player, nested, null, budget, depth + 1)) {
+                    // A bundle recurses with no owning inventory, so the item is updated in place.
+                    bundle.setItems(java.util.List.of(nested));
+                    item.setItemMeta(bundle);
+                    if (inventory != null) {
+                        inventory.setItem(i, item);
+                    }
+                    changed = true;
                 }
             }
         }
+        return changed;
     }
 
     /**

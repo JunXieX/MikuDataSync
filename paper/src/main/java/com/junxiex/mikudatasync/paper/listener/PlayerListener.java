@@ -1,7 +1,6 @@
 package com.junxiex.mikudatasync.paper.listener;
 
 import com.junxiex.mikudatasync.common.NackMessage;
-import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.paper.ApplyService;
@@ -12,7 +11,6 @@ import com.junxiex.mikudatasync.paper.MikuDataSyncPaper;
 import com.junxiex.mikudatasync.paper.NmsBridge;
 import com.junxiex.mikudatasync.paper.PaperConfig;
 import com.junxiex.mikudatasync.paper.PendingSnapshots;
-import com.junxiex.mikudatasync.paper.PluginSchedulers;
 import net.kyori.adventure.text.Component;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -106,7 +104,6 @@ public final class PlayerListener implements Listener {
         }
         try {
             applyService.apply(player, pending.prepared());
-            ipcClient.ack(player.getUniqueId(), pending.seq());
         } catch (Exception e) {
             skipQuitCapture.add(player.getUniqueId());
             com.junxiex.mikudatasync.common.Metrics.recordApplyFailure();
@@ -145,10 +142,12 @@ public final class PlayerListener implements Listener {
             return;
         }
         // Vanilla drops the menu cursor item into the world when the player disconnects, so the
-        // snapshot would carry a copy while the world keeps another. Take it out of the menu first
-        // and pass it in as the cursor payload, exactly like the switch path does.
+        // snapshot would carry a copy while the world keeps another: take it out first and pass it in
+        // as the cursor payload, exactly like the switch path does. With the IPC down there is no
+        // snapshot to carry it, and leaving it in the menu lets the container close put it back into
+        // the inventory, which is saved with the player.
         ItemStack carried = null;
-        if (captureService.capturesCursor()) {
+        if (captureService.capturesCursor() && ipcClient.state() == IpcClient.State.CONNECTED) {
             carried = NmsBridge.getCarriedItem(player);
             if (carried != null && !carried.getType().isAir()) {
                 NmsBridge.setCarriedItem(player, null);

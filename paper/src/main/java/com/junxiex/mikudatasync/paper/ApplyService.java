@@ -6,7 +6,6 @@ import com.junxiex.mikudatasync.common.CoreData;
 import com.junxiex.mikudatasync.common.EffectList;
 import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.MiscData;
-import com.junxiex.mikudatasync.common.Protocol;
 import com.junxiex.mikudatasync.common.ProtocolException;
 import com.junxiex.mikudatasync.common.Segment;
 import com.junxiex.mikudatasync.common.SnapshotEnvelope;
@@ -41,18 +40,20 @@ public final class ApplyService {
         this.config = config;
     }
 
-    public record Prepared(SnapshotEnvelope envelope, CoreData core, List<EffectList.Entry> effects,
+    public record Prepared(SnapshotEnvelope envelope, CoreData core, GameMode gameMode,
+                           List<EffectList.Entry> effects,
                            List<AttributeList.Entry> attributes, ItemStack[] inventory, ItemStack[] enderChest,
                            ItemStack cursorItem, byte[] pdc,
                            List<AdvancementList.Entry> advancements,
                            List<StatisticsList.Entry> statistics, byte[] maps) {
     }
 
-    /** Decodes the snapshot off the entity thread; apply() then only performs mutations. */
+    /**
+     * Decodes the snapshot off the entity thread; apply() then only performs mutations. The schema
+     * version needs no check here: {@link SnapshotEnvelope#decode} already refuses anything but this
+     * build's layout.
+     */
     public Prepared prepare(SnapshotEnvelope envelope) throws Exception {
-        if (envelope.schemaVersion() > Protocol.SCHEMA_VERSION) {
-            throw new ProtocolException("unsupported schema version: " + envelope.schemaVersion());
-        }
         if (envelope.dataVersion() != NmsBridge.dataVersion()) {
             throw new ProtocolException("data version mismatch: snapshot=" + envelope.dataVersion()
                     + ", local=" + NmsBridge.dataVersion());
@@ -87,16 +88,11 @@ public final class ApplyService {
         }
         byte[] maps = envelope.segment(Segment.MAPS);
         byte[] pdc = envelope.segment(Segment.PDC);
-        if (core != null) {
-            GameMode.valueOf(core.gameMode());
-        }
+        // Resolved here so apply() cannot fail on input the player already received.
+        GameMode gameMode = core == null ? null : GameMode.valueOf(core.gameMode());
         StageMetrics.record("apply.decode", System.nanoTime() - stageStart);
-        return new Prepared(envelope, core, effects, attributes, inventory, enderChest, cursorItem,
+        return new Prepared(envelope, core, gameMode, effects, attributes, inventory, enderChest, cursorItem,
                 pdc, advancements, statistics, maps);
-    }
-
-    public void apply(Player player, SnapshotEnvelope envelope) throws Exception {
-        apply(player, prepare(envelope));
     }
 
     public void apply(Player player, Prepared prepared) throws Exception {
@@ -112,7 +108,6 @@ public final class ApplyService {
         byte[] maps = prepared.maps();
 
         long start = System.nanoTime();
-        long stageStart = System.nanoTime();
 
         try {
             Bukkit.getPluginManager().callEvent(new MikuDataSyncApplyEvent(player, envelope));
@@ -121,7 +116,7 @@ public final class ApplyService {
             // the player on every reconnect for as long as the snapshot stays current.
             Bukkit.getLogger().warning("MikuDataSyncApplyEvent listener failed: " + e);
         }
-        stageStart = System.nanoTime();
+        long stageStart = System.nanoTime();
         if (pdc != null) {
             // First mutation of the apply: the PDC bytes are the only opaque blob left at this point,
             // so a failure here happens before the inventory/health are touched. It stays degraded
@@ -143,8 +138,8 @@ public final class ApplyService {
             }
         }
         StageMetrics.record("apply.pdc", System.nanoTime() - stageStart);
-        if (core != null) {
-            player.setGameMode(GameMode.valueOf(core.gameMode()));
+        if (prepared.gameMode() != null) {
+            player.setGameMode(prepared.gameMode());
         }
         if (attributes != null) {
             for (AttributeList.Entry entry : attributes) {

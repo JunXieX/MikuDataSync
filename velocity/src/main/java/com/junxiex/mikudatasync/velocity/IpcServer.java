@@ -49,11 +49,13 @@ public final class IpcServer implements AutoCloseable {
     /** Hard cap on concurrent backend connections (one per backend server in practice). */
     private static final int MAX_CONNECTIONS = 64;
 
+    /** Pause between failed accept() calls; without it a persistent failure spins a whole core. */
+    private static final long ACCEPT_RETRY_MS = 500L;
+
     private final Logger logger;
     private final VelocityConfig config;
     private final SnapshotStore store;
     private final Set<String> knownServers;
-    private final UUID nodeId = UUID.randomUUID();
     private final Map<String, Connection> connections = new ConcurrentHashMap<>();
     private final Map<Long, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private final Map<UUID, CompletableFuture<Void>> pendingFlushes = new ConcurrentHashMap<>();
@@ -164,15 +166,42 @@ public final class IpcServer implements AutoCloseable {
         }
     }
 
-    public void send(String serverId, Opcode opcode, byte[] payload) {
+    /**
+     * Queues a frame and runs {@code afterWrite} once it is on the wire (or known to have failed).
+     * Nothing here blocks the caller: a peer that stopped reading must not stall the commit thread,
+     * the Velocity event thread or a command thread.
+     */
+    public void sendAsync(String serverId, Opcode opcode, byte[] payload, Runnable afterWrite) {
         Connection connection = connections.get(serverId);
         if (connection == null) {
+            logger.warn("Dropping {} for {}: backend is not connected", opcode, serverId);
+            afterWrite.run();
             return;
         }
+        enqueueSend(connection, opcode, 0L, payload,
+                failure -> {
+                    if (failure != null) {
+                        logger.warn("Failed to send {} to {}", opcode, serverId, failure);
+                    }
+                    afterWrite.run();
+                });
+    }
+
+    /** Runs {@code onDone} after the queued write; a failed write is passed in, success is null. */
+    private void enqueueSend(Connection connection, Opcode opcode, long requestId, byte[] payload,
+                             java.util.function.Consumer<IOException> onDone) {
         try {
-            connection.send(opcode, 0L, payload);
-        } catch (IOException e) {
-            logger.warn("Failed to send {} to {}", opcode, serverId, e);
+            repliers.execute(() -> {
+                IOException failure = null;
+                try {
+                    connection.send(opcode, requestId, payload);
+                } catch (IOException e) {
+                    failure = e;
+                }
+                onDone.accept(failure);
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            onDone.accept(new IOException("proxy is shutting down", e));
         }
     }
 
@@ -185,13 +214,12 @@ public final class IpcServer implements AutoCloseable {
         long requestId = requestIds.incrementAndGet();
         CompletableFuture<Frame> future = new CompletableFuture<>();
         pendingRequests.put(requestId, new PendingRequest(connection, future));
-        try {
-            connection.send(opcode, requestId, payload);
-        } catch (IOException e) {
-            pendingRequests.remove(requestId);
-            future.completeExceptionally(e);
-            return future;
-        }
+        enqueueSend(connection, opcode, requestId, payload, failure -> {
+            if (failure != null) {
+                pendingRequests.remove(requestId);
+                future.completeExceptionally(failure);
+            }
+        });
         return future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .whenComplete((frame, error) -> pendingRequests.remove(requestId));
     }
@@ -231,13 +259,12 @@ public final class IpcServer implements AutoCloseable {
                 registered.completeExceptionally(error);
             }
         });
-        try {
-            connection.send(Opcode.FLUSH_REQ, gateId, IpcPayloads.uuid(uuid));
-        } catch (IOException e) {
-            pendingRequests.remove(gateId);
-            future.completeExceptionally(e);
-            return new Handoff(gateId, future);
-        }
+        enqueueSend(connection, Opcode.FLUSH_REQ, gateId, IpcPayloads.uuid(uuid), failure -> {
+            if (failure != null) {
+                pendingRequests.remove(gateId);
+                future.completeExceptionally(failure);
+            }
+        });
         CompletableFuture<Frame> bounded = future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .whenComplete((frame, error) -> pendingRequests.remove(gateId));
         return new Handoff(gateId, bounded);
@@ -290,8 +317,17 @@ public final class IpcServer implements AutoCloseable {
                     socket.close();
                 }
             } catch (IOException e) {
-                if (!closed.get()) {
-                    logger.warn("IPC accept failed", e);
+                if (closed.get()) {
+                    return;
+                }
+                // A persistent accept failure (no file descriptors left) must not spin: without the
+                // pause this loop burns a core and writes a stack trace per iteration.
+                logger.warn("IPC accept failed: {}; retrying in {} ms", e.toString(), ACCEPT_RETRY_MS);
+                try {
+                    Thread.sleep(ACCEPT_RETRY_MS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
                 }
             }
         }
@@ -323,10 +359,8 @@ public final class IpcServer implements AutoCloseable {
             // stream, and the backend starts using the connection as soon as it reads that answer.
             synchronized (connection) {
                 Connection previous = connections.put(serverId, connection);
-                connection.send(Opcode.HELLO_ACK, hello.requestId(), new ByteWriter(24)
-                        .writeInt(Protocol.PROTOCOL_VERSION)
-                        .writeUtf(nodeId.toString())
-                        .toByteArray());
+                connection.send(Opcode.HELLO_ACK, hello.requestId(),
+                        new ByteWriter(4).writeInt(Protocol.PROTOCOL_VERSION).toByteArray());
                 if (previous != null) {
                     previous.close();
                 }
@@ -343,6 +377,15 @@ public final class IpcServer implements AutoCloseable {
             }
         } catch (EOFException | SocketException ignored) {
             // clean disconnect
+        } catch (java.net.SocketTimeoutException timeout) {
+            if (connection == null) {
+                // A peer that never sends HELLO: probing an exposed port must not write a stack trace.
+                logger.debug("IPC handshake timed out for {}", socket.getRemoteSocketAddress());
+            } else {
+                // Read loop idle timeout: the peer stopped sending (dead network, stopped process).
+                logger.warn("IPC read timed out for {} after {} ms", connection.serverId(),
+                        config.readTimeoutMs());
+            }
         } catch (Exception e) {
             if (!closed.get()) {
                 logger.warn("IPC connection error", e);
@@ -454,7 +497,9 @@ public final class IpcServer implements AutoCloseable {
                         }, requestId);
                         return;
                     }
-                    if ("switch".equalsIgnoreCase(message.saveCause())) {
+                    if (token[0] != 0L) {
+                        // The token, not the save cause, ties a PUT to a gate: periodic and quit PUTs
+                        // carry 0 and can never release a switch.
                         completeHandoff(player, token[0], frame);
                     }
                     reply(connection, () -> {
@@ -465,11 +510,6 @@ public final class IpcServer implements AutoCloseable {
                         }
                     }, requestId);
                 });
-            }
-            case ACK -> {
-                UUID[] uuid = new UUID[1];
-                long appliedSeq = IpcPayloads.readAck(frame.payload(), uuid);
-                store.ack(uuid[0], appliedSeq);
             }
             case NACK -> {
                 NackMessage nack = NackMessage.decode(frame.payload());

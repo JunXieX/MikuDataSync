@@ -4,7 +4,6 @@ import com.junxiex.mikudatasync.common.IpcPayloads;
 import com.junxiex.mikudatasync.common.Metrics;
 import com.junxiex.mikudatasync.common.Opcode;
 import com.junxiex.mikudatasync.common.Protocol;
-import com.junxiex.mikudatasync.common.SnapshotEnvelope;
 import com.junxiex.mikudatasync.common.SnapshotMessage;
 import com.junxiex.mikudatasync.velocity.BackupService;
 import com.junxiex.mikudatasync.velocity.IpcServer;
@@ -42,9 +41,17 @@ public final class MdsCommand implements SimpleCommand {
         }
     }
 
-    /** Stops the admin file thread when the proxy shuts down. */
+    /** Stops the admin file thread when the proxy shuts down, after the work it already queued. */
     public void close() {
         adminIo.shutdown();
+        try {
+            if (!adminIo.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)) {
+                adminIo.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            adminIo.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     private final MikuDataSyncVelocity plugin;
@@ -209,10 +216,6 @@ public final class MdsCommand implements SimpleCommand {
         runAdmin(() -> {
             try {
                 SnapshotMessage message = backups.read(arguments[2]);
-                SnapshotEnvelope parsed = SnapshotEnvelope.decode(message.envelope());
-                if (parsed.schemaVersion() > Protocol.SCHEMA_VERSION) {
-                    throw new IllegalStateException("backup schema is newer than this build");
-                }
                 var current = target.getCurrentServer();
                 if (current.isEmpty()) {
                     source.sendMessage(Component.text("Restore needs the player to be on a backend server"));

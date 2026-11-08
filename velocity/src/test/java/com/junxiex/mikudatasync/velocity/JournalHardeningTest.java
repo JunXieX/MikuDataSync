@@ -38,7 +38,7 @@ class JournalHardeningTest {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
         try (JournalStore journal = newStore(path, Long.MAX_VALUE)) {
-            SnapshotStore store = new SnapshotStore(1 << 20, journal);
+            SnapshotStore store = new SnapshotStore(1 << 20, journal, 0L);
             assertEquals(1L, store.commit(uuid, message("quit", (byte) 1)));
             assertEquals(2L, store.commit(uuid, message("quit", (byte) 2)));
             store.evict(uuid);
@@ -51,11 +51,11 @@ class JournalHardeningTest {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
         try (JournalStore journal = newStore(path, Long.MAX_VALUE)) {
-            SnapshotStore store = new SnapshotStore(1 << 20, journal);
+            SnapshotStore store = new SnapshotStore(1 << 20, journal, 0L);
             assertEquals(1L, store.commit(uuid, message("quit", (byte) 1)));
         }
         try (JournalStore journal = newStore(path, Long.MAX_VALUE)) {
-            SnapshotStore store = new SnapshotStore(1 << 20, journal);
+            SnapshotStore store = new SnapshotStore(1 << 20, journal, 0L);
             assertEquals(2L, store.commit(uuid, message("quit", (byte) 2)));
         }
     }

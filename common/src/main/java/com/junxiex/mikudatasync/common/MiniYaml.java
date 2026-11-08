@@ -178,22 +178,18 @@ public final class MiniYaml {
     }
 
     public static Object value(Map<String, Object> root, String path) {
-        Object current = root;
-        for (String part : path.split("[.]")) {
-            if (!(current instanceof Map<?, ?> map)) {
-                return null;
-            }
-            current = map.get(part);
-            if (current == null) {
-                return null;
-            }
-        }
         // Scalars are stored wrapped so the original text stays available; accessors see the value.
+        Object current = lookup(root, path);
         return current instanceof RawScalar scalar ? scalar.parsed() : current;
     }
 
     /** Original text of a scalar, or null when the path is missing or not a scalar. */
     public static String rawText(Map<String, Object> root, String path) {
+        Object current = lookup(root, path);
+        return current instanceof RawScalar scalar ? scalar.text() : null;
+    }
+
+    private static Object lookup(Map<String, Object> root, String path) {
         Object current = root;
         for (String part : path.split("[.]")) {
             if (!(current instanceof Map<?, ?> map)) {
@@ -204,7 +200,7 @@ public final class MiniYaml {
                 return null;
             }
         }
-        return current instanceof RawScalar scalar ? scalar.text() : null;
+        return current;
     }
 
     public static String getString(Map<String, Object> root, String path, String defaultValue) {

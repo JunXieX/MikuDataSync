@@ -34,12 +34,13 @@ public final class PendingSnapshots {
         return true;
     }
 
+    /**
+     * Takes the staged snapshot for a joining player. Expiry is handled by evictExpired alone: a
+     * second age check here would turn a slow login into "brand-new player", and the quit capture
+     * would then overwrite the snapshot this one was fetched from.
+     */
     public Pending remove(UUID uuid) {
-        Pending value = pending.remove(uuid);
-        if (value != null && value.createdAt() < System.currentTimeMillis() - MAX_AGE_MS) {
-            return null;
-        }
-        return value;
+        return pending.remove(uuid);
     }
 
     /** Drops a staged entry without treating it as an applied snapshot (used on quit). */
@@ -72,9 +73,5 @@ public final class PendingSnapshots {
 
     public boolean isUnsynced(UUID uuid) {
         return unsynced.contains(uuid);
-    }
-
-    public int size() {
-        return pending.size();
     }
 }

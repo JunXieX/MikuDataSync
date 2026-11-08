@@ -126,11 +126,7 @@ public final class SnapshotEnvelope {
         if (rawLength < 0 || rawLength > Protocol.MAX_INNER_BYTES) {
             throw new ProtocolException("invalid inner length: " + rawLength);
         }
-        int payloadLength = bytes.length - 14;
-        if (payloadLength < 0) {
-            throw new ProtocolException("snapshot payload is too small");
-        }
-        byte[] payload = reader.readBytes(payloadLength);
+        byte[] payload = reader.readBytes(bytes.length - 14);
         int expectedCrc = reader.readInt();
         int actualCrc = Crc32c.compute(bytes, 0, bytes.length - 4);
         if (expectedCrc != actualCrc) {
@@ -148,7 +144,10 @@ public final class SnapshotEnvelope {
             throw new ProtocolException("inner length mismatch: " + raw.length + " != " + rawLength);
         }
         ByteReader inner = new ByteReader(raw);
-        int flags = inner.readByte();
+        // Segment presence bitmap, derived from the table below and covered by the CRC. Read but not
+        // compared: comparing it would make adding a segment id later invalidate every record that an
+        // older build already wrote.
+        inner.readByte();
         int dataVersion = inner.readInt();
         int count = inner.readUnsignedShort();
         if (count > MAX_SEGMENTS) {
@@ -158,7 +157,7 @@ public final class SnapshotEnvelope {
         for (int i = 0; i < count; i++) {
             int id = inner.readUnsignedShort();
             int length = inner.readInt();
-            if (id <= 0 || id > 0xFFFF) {
+            if (id <= 0) {
                 throw new ProtocolException("invalid segment id: " + id);
             }
             if (length < 0 || length > Protocol.MAX_SEGMENT_BYTES) {
@@ -171,11 +170,7 @@ public final class SnapshotEnvelope {
         if (inner.remaining() != 0) {
             throw new ProtocolException("unexpected bytes in snapshot body: " + inner.remaining());
         }
-        SnapshotEnvelope envelope = new SnapshotEnvelope(schemaVersion, dataVersion, segments);
-        if (envelope.flags() != flags) {
-            throw new ProtocolException("snapshot flags mismatch");
-        }
-        return envelope;
+        return new SnapshotEnvelope(schemaVersion, dataVersion, segments);
     }
 
     private int flags() {

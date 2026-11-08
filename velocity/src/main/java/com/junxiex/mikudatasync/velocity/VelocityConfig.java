@@ -39,6 +39,14 @@ public record VelocityConfig(
         NEVER
     }
 
+    /**
+     * Upper bound for {@code sync.switch-timeout-ms}. The whole handoff chain is ordered by it:
+     * gate (this) + abort grace (750ms) must stay below the backend's 3s unfreeze, which must stay
+     * below its 5s item settlement. A longer gate lets the backend unfreeze and settle on its own,
+     * so the abort would stop being the authoritative answer.
+     */
+    private static final int MAX_SWITCH_TIMEOUT_MS = 2_000;
+
     public static VelocityConfig load(Path dataDirectory) throws IOException, ConfigException {
         Files.createDirectories(dataDirectory);
         Path file = dataDirectory.resolve("config.yml");
@@ -65,9 +73,10 @@ public record VelocityConfig(
         boolean retainOffline = MiniYaml.getBoolean(root, "store.retain-offline-snapshots", false);
 
         int switchTimeoutMs = MiniYaml.getInt(root, "sync.switch-timeout-ms", 1500);
-        // A GET that lands while a switch flush is in flight must wait at least as long as the gate,
-        // otherwise it returns a pre-switch snapshot and the target server applies stale data.
-        int getWaitMs = MiniYaml.getInt(root, "sync.get-wait-ms", 1500);
+        // How long a GET waits for this player's in-flight switch flush. It has to stay below the
+        // backend's sync.prelogin-fetch-timeout-ms (default 500): the backend gives up first and
+        // refuses that login, so waiting longer here only turns a slow gate into a kicked player.
+        int getWaitMs = MiniYaml.getInt(root, "sync.get-wait-ms", 400);
         String failMode = MiniYaml.getString(root, "sync.fail-mode", "closed");
         int periodicFlushSeconds = Math.max(1, Math.min(3_600, MiniYaml.getInt(root, "sync.periodic-flush-seconds", 30)));
         int maxSnapshotBytes = MiniYaml.getInt(root, "sync.max-snapshot-bytes", Protocol.MAX_SNAPSHOT_BYTES);
@@ -88,16 +97,14 @@ public record VelocityConfig(
         if (getWaitMs < 10 || getWaitMs > 60000) {
             throw new ConfigException("sync.get-wait-ms out of range: " + getWaitMs);
         }
-        boolean getWaitAdjusted = false;
-        if (getWaitMs < switchTimeoutMs) {
-            // A GET that gives up before the switch gate does returns the pre-switch snapshot, so the
-            // value is raised instead of rejecting the file: 1.5.x shipped get-wait-ms: 300 and an
-            // upgrade must not refuse to start (that would deny every login on every backend).
-            getWaitMs = switchTimeoutMs;
-            getWaitAdjusted = true;
+        if (switchTimeoutMs < 50) {
+            throw new ConfigException("sync.switch-timeout-ms must be at least 50: " + switchTimeoutMs);
         }
-        if (switchTimeoutMs < 50 || switchTimeoutMs > 30000) {
-            throw new ConfigException("sync.switch-timeout-ms out of range: " + switchTimeoutMs);
+        // Lowered instead of rejected: refusing to start would deny every login on every backend, and
+        // a gate above the backend's own unfreeze window is never honoured anyway.
+        boolean switchTimeoutClamped = switchTimeoutMs > MAX_SWITCH_TIMEOUT_MS;
+        if (switchTimeoutClamped) {
+            switchTimeoutMs = MAX_SWITCH_TIMEOUT_MS;
         }
         if (readTimeoutMs < 1000 || readTimeoutMs > 600_000) {
             throw new ConfigException("protocol.read-timeout-ms out of range: " + readTimeoutMs);
@@ -136,24 +143,24 @@ public record VelocityConfig(
                 commandPermission,
                 compactionThresholdMb * 1024L * 1024L,
                 retainOfflineMb * 1024L * 1024L,
-                warning(getWaitAdjusted, switchTimeoutMs, secret)
+                warning(switchTimeoutClamped, secret)
         );
         return loaded;
     }
 
-    private static String warning(boolean getWaitAdjusted, int switchTimeoutMs, String secret) {
-        String message = null;
-        if (getWaitAdjusted) {
-            message = "sync.get-wait-ms was raised to sync.switch-timeout-ms (" + switchTimeoutMs
-                    + "); update config.yml to silence this notice";
+    private static String warning(boolean switchTimeoutClamped, String secret) {
+        String message = switchTimeoutClamped
+                ? "sync.switch-timeout-ms was lowered to " + MAX_SWITCH_TIMEOUT_MS + ": a longer gate is "
+                        + "decided after the backend already settled the cursor item, so the abort would "
+                        + "no longer be authoritative"
+                : null;
+        if (!Protocol.PLACEHOLDER_SECRET.equals(secret)) {
+            return message;
         }
-        if (Protocol.PLACEHOLDER_SECRET.equals(secret)) {
-            String placeholder = "protocol.secret is still the value shipped in config.yml; anyone who can "
-                    + "reach the IPC port can write snapshots for any player. Replace it with a random "
-                    + "secret of 32 characters or more";
-            message = message == null ? placeholder : message + "; " + placeholder;
-        }
-        return message;
+        String placeholder = "protocol.secret is still the value shipped in config.yml; anyone who can "
+                + "reach the IPC port can write snapshots for any player. Replace it with a random "
+                + "secret of 32 characters or more";
+        return message == null ? placeholder : message + "; " + placeholder;
     }
 
     public boolean failClosed() {

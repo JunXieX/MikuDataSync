@@ -9,7 +9,6 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -44,7 +43,9 @@ class CodecCoverageTest {
 
     @Test
     void envelopeRejectsCorruption() throws Exception {
-        SnapshotEnvelope envelope = new SnapshotEnvelope(1, 1, Map.of(Segment.CORE, new byte[] {1, 2, 3}));
+        // Schema must be the current one, otherwise this asserts the schema check instead of the CRC.
+        SnapshotEnvelope envelope = new SnapshotEnvelope(Protocol.SCHEMA_VERSION, 1,
+                Map.of(Segment.CORE, new byte[] {1, 2, 3}));
         byte[] bytes = envelope.encode();
         bytes[16] ^= 0x7F;
         assertThrows(ProtocolException.class, () -> SnapshotEnvelope.decode(bytes));
@@ -72,10 +73,6 @@ class CodecCoverageTest {
         UUID uuid = UUID.randomUUID();
         assertEquals(uuid, IpcPayloads.parseUuid(IpcPayloads.uuid(uuid)));
 
-        UUID[] out = new UUID[1];
-        long seq = IpcPayloads.readAck(IpcPayloads.ack(uuid, 42L), out);
-        assertEquals(42L, seq);
-        assertEquals(uuid, out[0]);
         assertEquals(77L, IpcPayloads.readPutOk(IpcPayloads.putOk(77L)));
 
         SnapshotEnvelope envelope = new SnapshotEnvelope(1, 99, Map.of(Segment.CORE, new byte[] {1}));

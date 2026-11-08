@@ -14,7 +14,6 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class SnapshotStoreTest {
@@ -33,7 +32,7 @@ class SnapshotStoreTest {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
         try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
-            SnapshotStore store = new SnapshotStore(1 << 20, journal);
+            SnapshotStore store = new SnapshotStore(1 << 20, journal, 0L);
             assertEquals(1L, store.commit(uuid, message(1, "switch", (byte) 1)));
             assertEquals(2L, store.commit(uuid, message(2, "switch", (byte) 2)));
             assertEquals(2L, store.commit(uuid, message(3, "switch", (byte) 2)));
@@ -42,18 +41,16 @@ class SnapshotStoreTest {
     }
 
     @Test
-    void ackIsMonotonicAndEvictRemovesMemoryEntry() throws Exception {
+    void evictDropsTheMemoryEntryButTheJournalStillServesIt() throws Exception {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
         try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
-            SnapshotStore store = new SnapshotStore(1 << 20, journal);
+            SnapshotStore store = new SnapshotStore(1 << 20, journal, 0L);
             store.commit(uuid, message(1, "quit", (byte) 1));
-            store.ack(uuid, 5L);
-            assertEquals(5L, store.get(uuid).appliedSeq());
-            store.ack(uuid, 3L);
-            assertEquals(5L, store.get(uuid).appliedSeq());
+            assertEquals(1L, store.get(uuid).seq());
             store.evict(uuid);
             assertNotNull(store.get(uuid));
+            assertEquals(1L, store.get(uuid).seq());
         }
     }
 
@@ -62,11 +59,11 @@ class SnapshotStoreTest {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
         try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
-            SnapshotStore store = new SnapshotStore(1 << 20, journal);
+            SnapshotStore store = new SnapshotStore(1 << 20, journal, 0L);
             store.commit(uuid, message(1, "quit", (byte) 9));
         }
         try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
-            SnapshotStore store = new SnapshotStore(1 << 20, journal);
+            SnapshotStore store = new SnapshotStore(1 << 20, journal, 0L);
             assertNotNull(store.get(uuid));
             assertEquals(1L, store.get(uuid).seq());
         }
@@ -77,20 +74,8 @@ class SnapshotStoreTest {
         Path path = tempDir.resolve("journal.mds");
         UUID uuid = UUID.randomUUID();
         try (JournalStore journal = new JournalStore(path, VelocityConfig.FsyncMode.NEVER, 10, Long.MAX_VALUE, org.slf4j.LoggerFactory.getLogger("store-test"))) {
-            SnapshotStore store = new SnapshotStore(8, journal);
+            SnapshotStore store = new SnapshotStore(8, journal, 0L);
             assertThrows(ProtocolException.class, () -> store.commit(uuid, message(1, "quit", (byte) 1)));
         }
-    }
-
-    @Test
-    void noJournalStillWorks() throws Exception {
-        SnapshotStore store = new SnapshotStore(1 << 20, null);
-        UUID uuid = UUID.randomUUID();
-        assertEquals(1L, store.commit(uuid, message(1, "quit", (byte) 1)));
-        assertEquals("disabled", store.journalStatus());
-        store.ack(uuid, 1L);
-        store.evict(uuid);
-        assertNull(store.get(uuid));
-        store.close();
     }
 }

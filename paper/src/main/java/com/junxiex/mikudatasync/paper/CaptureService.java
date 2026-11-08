@@ -118,36 +118,18 @@ public final class CaptureService {
             long captureSeq = captureSequences
                     .computeIfAbsent(player.getUniqueId(), id -> new AtomicLong())
                     .incrementAndGet();
-            Metrics.recordCapture(System.nanoTime() - start);
-            if (config.logTimings()) {
-                logger.fine("capture " + cause + " took " + (System.nanoTime() - start) / 1_000_000.0 + "ms");
-            }
             long encodeStart = System.nanoTime();
             byte[] encoded;
             try {
-                try {
-                    encoded = envelope.encode();
-                } catch (ProtocolException tooLarge) {
-                    // Highly incompressible data can pass every per-segment limit and still exceed the
-                    // compressed snapshot budget. Drop the optional high-entropy segments once before
-                    // giving up, so the player stays switchable instead of being refused forever.
-                    SnapshotEnvelope degraded = degrade(envelope, segments);
-                    if (degraded == null) {
-                        throw tooLarge;
-                    }
-                    try {
-                        encoded = degraded.encode();
-                    } catch (ProtocolException stillTooLarge) {
-                        // The degraded form must never replace the original failure with a smaller one:
-                        // report the original cause so the log says which limit was hit first.
-                        tooLarge.addSuppressed(stillTooLarge);
-                        throw tooLarge;
-                    }
-                    logger.warning("Snapshot for " + player.getName() + " exceeded the size limit ("
-                            + tooLarge.getMessage() + "); optional segments were dropped for this capture");
-                }
+                encoded = encodeWithinLimits(envelope, segments, player);
             } finally {
                 StageMetrics.record("capture.encode", System.nanoTime() - encodeStart);
+            }
+            // Recorded after encoding: the encode is the second half of what this costs on the tick
+            // thread, and a capture that failed above must not count as a success here.
+            Metrics.recordCapture(System.nanoTime() - start);
+            if (config.logTimings()) {
+                logger.fine("capture " + cause + " took " + (System.nanoTime() - start) / 1_000_000.0 + "ms");
             }
             SnapshotMessage message = new SnapshotMessage(0L, captureSeq, cause, serverId, encoded);
             try {
@@ -168,9 +150,33 @@ public final class CaptureService {
     }
 
     /**
-     * Builds a smaller envelope for a capture that does not fit: map colours first (the MAPS segment
-     * carries them), then the PDC and map segments themselves. Returns null when even that is too
-     * large, in which case the original failure stands.
+     * Encodes the envelope, dropping the optional high-entropy segments once when the compressed
+     * budget is exceeded: highly incompressible data can pass every per-segment limit and still be
+     * too large, and degrading keeps the player switchable instead of refused forever.
+     *
+     * <p>The second attempt must never replace the original failure - the log has to name the limit
+     * that was hit first.
+     */
+    private byte[] encodeWithinLimits(SnapshotEnvelope envelope, Map<Integer, byte[]> segments, Player player)
+            throws ProtocolException {
+        try {
+            return envelope.encode();
+        } catch (ProtocolException tooLarge) {
+            try {
+                byte[] degraded = degrade(envelope, segments).encode();
+                logger.warning("Snapshot for " + player.getName() + " exceeded the size limit ("
+                        + tooLarge.getMessage() + "); optional segments were dropped for this capture");
+                return degraded;
+            } catch (ProtocolException stillTooLarge) {
+                tooLarge.addSuppressed(stillTooLarge);
+                throw tooLarge;
+            }
+        }
+    }
+
+    /**
+     * Builds a smaller envelope: map colours first (the MAPS segment carries them), then the PDC and
+     * map segments themselves.
      */
     private static SnapshotEnvelope degrade(SnapshotEnvelope original, Map<Integer, byte[]> segments) {
         java.util.Map<Integer, byte[]> reduced = new java.util.LinkedHashMap<>(segments);
@@ -191,11 +197,7 @@ public final class CaptureService {
                 reduced.put(Segment.ENDER_CHEST, ItemStack.serializeItemsAsBytes(ender));
             }
         }
-        try {
-            return new SnapshotEnvelope(original.schemaVersion(), original.dataVersion(), reduced);
-        } catch (RuntimeException e) {
-            return null;
-        }
+        return new SnapshotEnvelope(original.schemaVersion(), original.dataVersion(), reduced);
     }
 
     private static ItemStack[] deserializeQuietly(byte[] payload) {

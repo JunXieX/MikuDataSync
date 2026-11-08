@@ -4,7 +4,7 @@
 
 跨服玩家数据同步插件：玩家在多个 Paper 子服之间切换时，物品栏、末影箱、状态、进度、统计、属性与 PDC 保持连续。插件不依赖任何数据库或外部中间件，由 Velocity 插件充当数据总线、快照存储与切换编排器。
 
-> 正式版 1.8.0，适用于 Paper 26.3 / Velocity 4.3.0 / Java 25。
+> 正式版 1.9.0，适用于 Paper 26.3 / Velocity 4.3.0 / Java 25。
 
 ## 运行要求
 
@@ -38,8 +38,8 @@
 | `store.compaction-threshold-mb` | 64 | 日志超过该大小后压缩为每玩家最新一条；复制阶段在后台进行，替换文件前要对整份新文件落盘，这段时间占用日志写锁（磁盘越慢越久，慢盘可能到百毫秒级） |
 | `store.retain-offline-snapshots` | false | 是否在内存保留离线玩家快照 |
 | `store.retain-offline-budget-mb` | 256 | 内存快照表的字节预算，与 `retain-offline-snapshots` 独立生效；条目数超过 32 后按最久未更新淘汰 |
-| `sync.switch-timeout-ms` | 1500 | 切服闸门等待源服快照的时间 |
-| `sync.get-wait-ms` | 1500 | 预登录取数时等待在途快照提交的时间；小于 `switch-timeout-ms` 时会被自动抬升并打日志 |
+| `sync.switch-timeout-ms` | 1500 | 切服闸门等待源服快照的时间（下限 50）；超过 2000 会被下调到 2000 并告警——更长的闸门会让后端的解冻与物品结算先于 abort，代理就不再是权威判定 |
+| `sync.get-wait-ms` | 400 | 预登录取数时等待该玩家在途切服提交的时间；必须小于 Paper 的 `sync.prelogin-fetch-timeout-ms`（默认 500），否则后端先放弃并拒绝登录 |
 | `sync.max-snapshot-bytes` | 1048576 | 单份快照的落盘上限（1KB~1MB） |
 | `sync.fail-mode` | closed | closed（不确定就拒绝切换）/ open（放行，可能读到旧快照）/ kick（拒绝并断开玩家） |
 | `sync.periodic-flush-seconds` | 30 | 日志刷盘与压缩的周期；它不产生快照，周期快照由 Paper 端 `sync.periodic-snapshot-seconds` 控制 |
@@ -52,7 +52,7 @@
 | --- | --- | --- |
 | `proxy.host` / `proxy.port` | 127.0.0.1 / 25666 | 代理 IPC 地址 |
 | `proxy.server-id` | survival-1 | 必须唯一，且与代理中的子服名一致；最长 128 字节，不能含 `|` |
-| `proxy.secret` | 需修改 | 与代理一致 |
+| `proxy.secret` | 需修改 | 与代理一致；请写成字符串（建议加引号），纯数字或小数会被两端按不同类型解析，握手会失败 |
 | `proxy.connect-timeout-ms` | 3000 | 连接代理 IPC 的超时（100~30000） |
 | `sync.sections.*` | 见默认配置 | 分段开关；关闭表示“不采集也不应用”，不会写入默认值。注意 health/food/experience/game-mode/flight 五项合并为 CORE 段，任一为 true 即整段同步 |
 | `sync.pdc-merge` | false | true 时把快照 PDC 合并进现有 PDC，而不是整体替换 |
@@ -76,7 +76,7 @@
 | `/mds switch <server>` | 代理端：把执行者切换到指定子服（走同步闸门） | `mikudatasync.admin` |
 | `/mds backup <player>` | 代理端：实时采集在线玩家当前数据并写入备份文件 | `mikudatasync.admin` |
 | `/mds backups` | 代理端：列出备份文件 | `mikudatasync.admin` |
-| `/mds restore <player> <file>` | 代理端：在线应用备份快照，返回 ACK/NACK（会立即覆盖当前数据） | `mikudatasync.admin` |
+| `/mds restore <player> <file>` | 代理端：在线应用备份快照并回报成功/失败（会立即覆盖当前数据） | `mikudatasync.admin` |
 | `/mdsbackend status` | 后端：查看本服 IPC 状态 | `mikudatasync.admin` |
 | `/mdsbackend bench` | 后端：运行一次 codec 微基准（p50/p95） | `mikudatasync.admin` |
 | `/mdsbackend selftest` | 后端：检查 NMS 桥状态并可对执行者做一次采集测试 | `mikudatasync.admin` |
@@ -98,9 +98,9 @@
 ## 切换语义与数据安全
 
 - 切服时先让源服产出最终快照并写入代理日志，确认成功后才放行目标服连接；失败默认拒绝切换。唯一的例外是源服已经失联（崩溃/重启/网络中断）：此时拒绝会让该服上的玩家全部卡住，因此改用最后一份已提交快照放行，并在日志中记录。
-- 玩家在目标服可交互前完成数据应用，应用失败会踢出并记录，不会带着半份数据继续游戏。
-- 快照的格式或数据版本与本服不一致（例如只升级了部分子服）时，该快照无法应用：玩家照常进入并使用本服已有数据。这一次会话的周期采集与退服采集会跳过，以免用本地数据覆盖快照；玩家主动切服时仍会写入新快照（否则他将无法换服）。日志会给出明确告警。
-- 每次提交有单调序号与内容哈希去重；同一玩家同一时刻只允许一个写者。
+- 玩家在目标服可交互前完成数据应用。背包/血量等关键段写入失败会踢出并记录；PDC、进度、统计、地图这些次要段失败只降级记日志，其余数据照常应用（它们不是「能玩下去」的前提）。
+- 快照的格式或数据版本与本服不一致（例如只升级了部分子服）时，该快照无法应用：玩家照常进入并使用本服已有数据。这一次会话的周期采集、退服采集与关机采集都会跳过，以免用本地数据覆盖快照；玩家主动切服时仍会写入新快照（否则他将无法换服）。日志会给出明确告警。
+- 每次提交有单调序号与内容哈希去重；同一玩家同一时刻只允许一个写者、只允许一个未结算的切服交接。
 - 切服提交带交接号：代理只认「本轮切服」的快照，迟到或上一轮的提交不会放行本轮切换；代理已判定某轮未落库时，该轮的迟到提交会被丢弃，避免光标物品出现两份。
 - 正常切服/退服不丢数据；代理崩溃最多丢最近的 fsync 窗口（默认 50ms）；后端被强杀最多丢一个周期快照间隔。该窗口是“不依赖数据库”的固有代价。
 - 日志是唯一持久层，请定期备份 `plugins/mikudatasync/data/journal.mds`。
@@ -128,5 +128,8 @@
 | 日志出现 does not fit this server | 快照由另一版本写出、无法应用；该玩家以本服已有数据进入，本次会话不采集。停服统一升级后删除 `plugins/mikudatasync/data/journal.mds` 即可恢复同步 |
 | 启动报 duplicate key | config.yml 里同一个键写了两次，会直接拒绝启动（旧版本是静默取最后一次） |
 | 日志出现 protocol version does not match / HMAC mismatch | 代理与所有后端必须同版本且 secret 完全一致；只升级一端会导致该后端全员进不去 |
-| 日志出现 sync.get-wait-ms was raised to sync.switch-timeout-ms | 旧配置里的 get-wait-ms 偏小，已自动抬升并提示；按提示改成不小于 switch-timeout-ms 即可消除 |
+| 切服窗口内客户端重连后被踢 | 检查 `sync.get-wait-ms` 是否小于 Paper 的 `sync.prelogin-fetch-timeout-ms`；前者更大时后端会先放弃取数并按 `on-sync-unavailable` 处理 |
+| 某玩家切服总是失败，日志出现 cursor item too large to sync | 光标上的那件物品超过单段 512KB 预算（典型是塞满成书的潜影盒）；让玩家先把物品放进背包或箱子再切服 |
+| 某玩家切服失败，日志出现 segment is too large even without embedded maps | 背包或末影箱整段超过 512KB（典型是塞满成书的潜影盒/收纳袋）；该玩家退服时的采集同样会失败，本次会话不会被保存，需先让玩家腾出物品 |
+| 日志出现 IPC accept failed | 代理的 fd 或内存耗尽（连接数上限 64）；检查 ulimit，该循环每 500ms 重试一次、不会占满 CPU |
 | 日志增长异常 | 检查 `/mds stats` 的 journal 大小；确认周期快照间隔与玩家数量 |

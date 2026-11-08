@@ -23,9 +23,12 @@ commands:
   permission: "mikudatasync.admin"
 
 sync:
+  # Values above 2000 are lowered to 2000 (with a log warning): gate + 750ms abort grace must stay
+  # below the backend's 3s unfreeze, or the backend settles the cursor item before the abort arrives.
   switch-timeout-ms: 1500
-  # Pre-login GET waits this long for an in-flight switch flush; keep it >= switch-timeout-ms.
-  get-wait-ms: 1500
+  # How long a pre-login GET waits for this player's in-flight switch flush. Keep it below the Paper
+  # side's sync.prelogin-fetch-timeout-ms (default 500): the backend gives up first and refuses the login.
+  get-wait-ms: 400
   fail-mode: "closed"
   periodic-flush-seconds: 30
   max-snapshot-bytes: 1048576
